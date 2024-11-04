@@ -1,13 +1,19 @@
 import { useState, useEffect } from 'react';
-import { Settings } from 'lucide-react'; // Add this import
+import { Settings, Menu } from 'lucide-react';
 import PhylogeneticViewer from './components/PhylogeneticViewer';
+import UnitsPanel from './components/UnitsPanel';
+import UnitConfigPanel from './components/UnitConfigPanel';
 
 function App() {
+  // Existing state
   const [treeData, setTreeData] = useState(null);
   const [lineageTreesIndex, setLineageTreesIndex] = useState(null);
   const [selectedRun, setSelectedRun] = useState('conf-classScoringVariationsAsContainerDimensions_noOsc');
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [showSettings, setShowSettings] = useState(false);
+  const [showUnits, setShowUnits] = useState(false);
+  const [units, setUnits] = useState([]);
+  const [selectedUnitId, setSelectedUnitId] = useState(null);
 
   // Load lineage trees index
   useEffect(() => {
@@ -32,6 +38,61 @@ function App() {
       .catch(error => console.error('Error loading tree:', error));
   }, [lineageTreesIndex, selectedRun, selectedIndex]);
 
+  // Units handlers
+  // Helper function to renumber units
+  const renumberUnits = (unitsArray) => {
+    return unitsArray.map((unit, index) => ({
+      ...unit,
+      id: index + 1
+    }));
+  };
+
+  // Handler to add a new unit
+  const handleAddUnit = () => {
+    const newUnit = {
+      id: units.length + 1,
+      type: 'Sequence Unit',
+      active: true,
+      muted: false,
+      soloed: false,
+      volume: -10
+    };
+    setUnits([...units, newUnit]);
+  };
+
+  // Handler to remove a unit and renumber remaining units
+  const handleRemoveUnit = (id) => {
+    setUnits(prevUnits => {
+      const remainingUnits = prevUnits.filter(unit => unit.id !== id);
+      return renumberUnits(remainingUnits);
+    });
+  };
+
+  // Handler to toggle unit states
+  const handleToggleState = (id, state) => {
+    setUnits(prevUnits => 
+      prevUnits.map(unit => {
+        if (unit.id === id) {
+          return { ...unit, [state]: !unit[state] };
+        }
+        return unit;
+      })
+    );
+  };
+
+  const handleUpdateVolume = (id, volume) => {
+    setUnits(units.map(unit => {
+      if (unit.id === id) {
+        return { ...unit, volume };
+      }
+      return unit;
+    }));
+  };
+
+  const handleSelectUnit = (id) => {
+    setSelectedUnitId(id === selectedUnitId ? null : id);
+  };
+
   if (!lineageTreesIndex || !treeData) {
     return <div className="fixed inset-0 bg-gray-950 flex items-center justify-center text-white">
       Loading...
@@ -43,10 +104,16 @@ function App() {
 
   return (
     <div className="fixed inset-0 flex flex-col bg-gray-950">
-      {/* Single-line Controls Bar */}
+      {/* Controls Bar */}
       <div className="p-2 bg-gray-900/80 backdrop-blur">
         <div className="flex items-center gap-2">
-          {/* Run Selector */}
+          <button 
+            onClick={() => setShowUnits(!showUnits)}
+            className="p- rounded hover:bg-gray-800 text-gray-400 transition-colors"
+          >
+            <Menu size={16} />
+          </button>
+
           <div className="flex-1">
             <select 
               value={selectedRun} 
@@ -61,7 +128,6 @@ function App() {
             </select>
           </div>
           
-          {/* Step Selector and Settings Button Container */}
           <div className="flex items-center gap-2">
             <select
               value={selectedIndex}
@@ -75,7 +141,6 @@ function App() {
               ))}
             </select>
             
-            {/* Settings Button */}
             <button 
               onClick={() => setShowSettings(!showSettings)}
               className="p-2 rounded hover:bg-gray-800 text-gray-400 transition-colors"
@@ -86,15 +151,39 @@ function App() {
         </div>
       </div>
 
-      {/* Visualization */}
-      <div className="flex-1">
-        <PhylogeneticViewer 
-          treeData={treeData}
-          experiment={selectedRun}
-          evoRunId={getEvoRunIdFromSelectedStep(lineageTreesIndex[selectedRun].all[selectedIndex].split('/')[2])}
-          showSettings={showSettings}
-          setShowSettings={setShowSettings}
-        />
+      {/* Main Content Area */}
+      <div className="flex-1 flex">
+        {showUnits && (
+          <>
+            <UnitsPanel
+              units={units}
+              selectedUnitId={selectedUnitId}
+              onSelectUnit={handleSelectUnit}
+              onAddUnit={handleAddUnit}
+              onRemoveUnit={handleRemoveUnit}
+              onToggleState={handleToggleState}
+              onUpdateVolume={handleUpdateVolume}
+            />
+            
+            {selectedUnitId && (
+              <UnitConfigPanel
+                unit={units.find(u => u.id === selectedUnitId)}
+                onClose={() => setSelectedUnitId(null)}
+                liveCodeEngine="Strudel"
+              />
+            )}
+          </>
+        )}
+
+        <div className="flex-1">
+          <PhylogeneticViewer 
+            treeData={treeData}
+            experiment={selectedRun}
+            evoRunId={getEvoRunIdFromSelectedStep(lineageTreesIndex[selectedRun].all[selectedIndex].split('/')[2])}
+            showSettings={showSettings}
+            setShowSettings={setShowSettings}
+          />
+        </div>
       </div>
     </div>
   );
