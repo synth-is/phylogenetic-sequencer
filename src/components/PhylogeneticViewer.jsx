@@ -5,27 +5,21 @@ import { pruneTreeForContextSwitches } from './phylogenetic-tree-common';
 
 const LINEAGE_SOUNDS_BUCKET_HOST = "https://ns9648k.web.sigma2.no";
 
-const PhylogeneticViewer = ({ treeData, experiment, evoRunId }) => {
-
-  // console.log("treeData", treeData);
-  // console.log("experiment", experiment);
-  // console.log("evoRunId", evoRunId);
-
+const PhylogeneticViewer = ({ treeData, experiment, evoRunId, showSettings, setShowSettings }) => {
   // State declarations
   const [hasInteracted, setHasInteracted] = useState(false);
   const [theme, setTheme] = useState('dark');
-  const [showSettings, setShowSettings] = useState(false);
   const [measureContextSwitches, setMeasureContextSwitches] = useState(false);
-  const [reverbAmount, setReverbAmount] = useState(10);  // Keep this as state for controlled input
+  const [reverbAmount, setReverbAmount] = useState(10);
 
-  // Refs - D3 and DOM elements
+  // Refs
+  const searchTermRef = useRef('');  // Search ref instead of state
   const containerRef = useRef(null);
   const svgRef = useRef(null);
   const gRef = useRef(null);
   const nodesRef = useRef(null);
   const linksRef = useRef(null);
-  const searchTermRef = useRef('');  // Search ref
-  const currentZoomTransformRef = useRef(null);  // Zoom ref
+  const currentZoomTransformRef = useRef(null);
 
   // Audio refs
   const audioContextRef = useRef(null);
@@ -396,14 +390,14 @@ const PhylogeneticViewer = ({ treeData, experiment, evoRunId }) => {
             });
           }
 
-          // Update audio volume
-          if (zoomGainNodeRef.current) {
-            const newVolume = Math.min(1, transform.k);
-            zoomGainNodeRef.current.gain.setValueAtTime(
-              newVolume, 
-              audioContextRef.current.currentTime
-            );
-          }
+          // // Update audio volume
+          // if (zoomGainNodeRef.current) {
+          //   const newVolume = Math.min(1, transform.k);
+          //   zoomGainNodeRef.current.gain.setValueAtTime(
+          //     newVolume, 
+          //     audioContextRef.current.currentTime
+          //   );
+          // }
         });
       });
 
@@ -492,62 +486,65 @@ const PhylogeneticViewer = ({ treeData, experiment, evoRunId }) => {
 
   return (
     <div className={`flex flex-col h-screen ${theme === 'light' ? 'bg-gray-100' : 'bg-gray-950'}`}>
-      <div className={`flex items-center gap-2 p-2 ${theme === 'light' ? 'bg-white/80' : 'bg-gray-900/80'} backdrop-blur`}>
-        <div className="relative flex-1 max-w-md">
-          <Search className="absolute left-2 top-1/2 transform -translate-y-1/2 text-gray-400" size={14} />
-          <input
-            type="text"
-            placeholder="Search by ID..."
-            onChange={handleSearchInput}
-            className="w-full pl-8 pr-3 py-1 text-sm bg-gray-800 text-white rounded border border-gray-700 focus:border-blue-500 focus:outline-none"
-          />
-        </div>
-  
-        <div className={`flex items-center gap-2 ${theme === 'light' ? 'text-gray-900' : 'text-white'}`}>
-          <span className="text-sm">Reverb</span>
-          <input
-            type="range"
-            className="w-24 h-2"
-            min="0"
-            max="100"
-            value={reverbAmount}
-            onChange={handleReverbChange}
-          />
-        </div>
-  
-        <button 
-          onClick={() => setShowSettings(!showSettings)}
-          className={`p-1 rounded ${theme === 'light' 
-            ? 'text-gray-600 hover:bg-gray-100' 
-            : 'text-gray-400 hover:bg-gray-800'}`}  // Changed from text-white to text-gray-400
-        >
-          <Settings size={16} />
-        </button>
-      </div>
-  
-      {/* Settings Popup */}
-      {showSettings && (
-        <div className={`absolute right-0 top-12 p-4 rounded-l shadow-lg 
-          ${theme === 'light' 
-            ? 'bg-white/80 text-gray-900' 
-            : 'bg-gray-900/80 text-white'} 
-          backdrop-blur`}
-        >
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={theme === 'light'}
-              onChange={(e) => setTheme(e.target.checked ? 'light' : 'dark')}
-              className={`rounded ${theme === 'light' 
-                ? 'bg-white border-gray-300' 
-                : 'bg-gray-800 border-gray-700'}`}
-            />
-            Light theme
-          </label>
-        </div>
-      )}  
 
-      {/* Main Content Area */}
+      {/* Enhanced Settings Panel */}
+      {showSettings && (
+        <div 
+          className={`absolute right-0 top-12 p-6 rounded-l shadow-lg z-50
+            ${theme === 'light' 
+              ? 'bg-white/95 text-gray-900' 
+              : 'bg-gray-900/95 text-white'} 
+            backdrop-blur w-80`}
+        >
+          <div className="space-y-6">
+            {/* Search Filter - Now using ref */}
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Search Filter</label>
+              <input
+                type="text"
+                defaultValue={searchTermRef.current}  // Using defaultValue with ref
+                onChange={handleSearchInput}
+                placeholder="Search by ID..."
+                className="w-full px-3 py-1.5 text-sm bg-gray-800 text-white rounded border border-gray-700 focus:border-blue-500 focus:outline-none"
+              />
+            </div>
+
+            {/* Reverb Control */}
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Reverb Amount</label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="range"
+                  className="flex-1 h-2"
+                  min="0"
+                  max="100"
+                  value={reverbAmount}
+                  onChange={(e) => setReverbAmount(Number(e.target.value))}
+                />
+                <span className="text-sm w-8">{reverbAmount}%</span>
+              </div>
+            </div>
+
+            {/* Theme Toggle */}
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Appearance</label>
+              <label className="flex items-center gap-2 text-sm cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={theme === 'light'}
+                  onChange={(e) => setTheme(e.target.checked ? 'light' : 'dark')}
+                  className={`rounded ${theme === 'light' 
+                    ? 'bg-white border-gray-300' 
+                    : 'bg-gray-800 border-gray-700'}`}
+                />
+                Light theme
+              </label>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Rest of the component remains the same */}
       <div className="flex-1 relative">
         <div 
           ref={containerRef} 
@@ -555,12 +552,10 @@ const PhylogeneticViewer = ({ treeData, experiment, evoRunId }) => {
           onClick={handleClick}
         />
 
-        {/* Minimal Instructions */}
         <div className="absolute bottom-2 left-2 text-white/70 text-xs">
           Hover: play sound • Double-click: download
         </div>
 
-        {/* Initial Interaction Message */}
         {!hasInteracted && (
           <div 
             className="absolute inset-0 flex items-center justify-center bg-black/50 backdrop-blur-sm z-20"
