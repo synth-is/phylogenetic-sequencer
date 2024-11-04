@@ -12,8 +12,10 @@ function App() {
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [showSettings, setShowSettings] = useState(false);
   const [showUnits, setShowUnits] = useState(false);
-  const [units, setUnits] = useState([]);
   const [selectedUnitId, setSelectedUnitId] = useState(null);
+
+  // Enhanced units state with default parameter values
+  const [units, setUnits] = useState([]);
 
   // Load lineage trees index
   useEffect(() => {
@@ -38,7 +40,6 @@ function App() {
       .catch(error => console.error('Error loading tree:', error));
   }, [lineageTreesIndex, selectedRun, selectedIndex]);
 
-  // Units handlers
   // Helper function to renumber units
   const renumberUnits = (unitsArray) => {
     return unitsArray.map((unit, index) => ({
@@ -47,7 +48,7 @@ function App() {
     }));
   };
 
-  // Handler to add a new unit
+  // Handler to add a new unit with all configurable parameters
   const handleAddUnit = () => {
     const newUnit = {
       id: units.length + 1,
@@ -55,7 +56,26 @@ function App() {
       active: true,
       muted: false,
       soloed: false,
-      volume: -10
+      volume: -10,
+      // Sequence parameters
+      speed: 0,
+      // Evolution parameters
+      grow: 0,
+      shrink: 0,
+      mutate: 0,
+      probNewTree: 0,
+      // Sample parameters
+      pitch: 0,
+      start: 0,
+      // Envelope parameters
+      attack: 0,
+      decay: 0,
+      sustain: 0.5,
+      release: 0,
+      // Effects parameters
+      filter: 0,
+      delay: 0,
+      reverb: 0
     };
     setUnits([...units, newUnit]);
   };
@@ -66,6 +86,9 @@ function App() {
       const remainingUnits = prevUnits.filter(unit => unit.id !== id);
       return renumberUnits(remainingUnits);
     });
+    if (selectedUnitId === id) {
+      setSelectedUnitId(null);
+    }
   };
 
   // Handler to toggle unit states
@@ -80,15 +103,26 @@ function App() {
     );
   };
 
+  // Handler to update volume
   const handleUpdateVolume = (id, volume) => {
-    setUnits(units.map(unit => {
-      if (unit.id === id) {
-        return { ...unit, volume };
-      }
-      return unit;
-    }));
+    setUnits(prevUnits => 
+      prevUnits.map(unit => {
+        if (unit.id === id) {
+          return { ...unit, volume };
+        }
+        return unit;
+      })
+    );
   };
 
+  // Handler to update any unit parameter
+  const handleUpdateUnit = (id, updatedUnit) => {
+    setUnits(prevUnits =>
+      prevUnits.map(unit => unit.id === id ? updatedUnit : unit)
+    );
+  };
+
+  // Handler to select a unit
   const handleSelectUnit = (id) => {
     setSelectedUnitId(id === selectedUnitId ? null : id);
   };
@@ -109,7 +143,7 @@ function App() {
         <div className="flex items-center gap-2">
           <button 
             onClick={() => setShowUnits(!showUnits)}
-            className="p- rounded hover:bg-gray-800 text-gray-400 transition-colors"
+            className="p-2 rounded hover:bg-gray-800 text-gray-400 transition-colors"
           >
             <Menu size={16} />
           </button>
@@ -169,7 +203,7 @@ function App() {
               <UnitConfigPanel
                 unit={units.find(u => u.id === selectedUnitId)}
                 onClose={() => setSelectedUnitId(null)}
-                liveCodeEngine="Strudel"
+                onUpdateUnit={handleUpdateUnit}
               />
             )}
           </>
