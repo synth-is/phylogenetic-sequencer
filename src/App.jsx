@@ -1,8 +1,11 @@
 import { useState, useEffect } from 'react';
-import { Settings, Menu } from 'lucide-react';
+import { Settings, Play } from 'lucide-react';
 import PhylogeneticViewer from './components/PhylogeneticViewer';
 import UnitsPanel from './components/UnitsPanel';
 import UnitConfigPanel from './components/UnitConfigPanel';
+import ViewSwitcher from './components/ViewSwitcher';
+import HeatmapViewer from './components/HeatmapViewer';
+import { DEFAULT_STRUDEL_CODE, LINEAGE_SOUNDS_BUCKET_HOST } from './constants';
 
 function App() {
   // Existing state
@@ -13,13 +16,14 @@ function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showUnits, setShowUnits] = useState(false);
   const [selectedUnitId, setSelectedUnitId] = useState(null);
+  const [currentView, setCurrentView] = useState('tree');
 
   // Enhanced units state with default parameter values
   const [units, setUnits] = useState([]);
 
   // Load lineage trees index
   useEffect(() => {
-    fetch('/lineage-trees.json')
+    fetch(`${LINEAGE_SOUNDS_BUCKET_HOST}/lineage-trees-metadata/lineage-trees.json`)
       .then(response => response.json())
       .then(index => {
         setLineageTreesIndex(index);
@@ -32,7 +36,7 @@ function App() {
     if (!lineageTreesIndex) return;
 
     const treePath = lineageTreesIndex[selectedRun].all[selectedIndex];
-    fetch(`/${treePath}`)
+    fetch(`${LINEAGE_SOUNDS_BUCKET_HOST}/lineage-trees/${treePath}`)
       .then(response => response.json())
       .then(treeJson => {
         setTreeData(treeJson);
@@ -57,6 +61,9 @@ function App() {
       muted: false,
       soloed: false,
       volume: -10,
+      // Live code parameters
+      strudelCode: DEFAULT_STRUDEL_CODE,  // Add default Strudel code
+      liveCodeEngine: 'Strudel',          // Default to Strudel engine
       // Sequence parameters
       speed: 0,
       // Evolution parameters
@@ -136,57 +143,62 @@ function App() {
   const runs = Object.keys(lineageTreesIndex);
   const steps = lineageTreesIndex[selectedRun].all.length;
 
-  return (
-    <div className="fixed inset-0 flex flex-col bg-gray-950">
-      {/* Controls Bar */}
-      <div className="p-2 bg-gray-900/80 backdrop-blur">
+  const TopBar = () => (
+    <div className="p-2 bg-gray-900/80 backdrop-blur">
+      <div className="flex items-center gap-2">
+        <button 
+          onClick={() => setShowUnits(!showUnits)}
+          className="p-2 rounded hover:bg-gray-800 text-gray-400 transition-colors"
+        >
+          <Play size={16} />
+        </button>
+
+        <div className="flex-1">
+          <select 
+            value={selectedRun} 
+            onChange={(e) => setSelectedRun(e.target.value)}
+            className="w-full bg-gray-800 text-white p-2 rounded border border-gray-700 text-sm"
+          >
+            {runs.map(run => (
+              <option key={run} value={run}>
+                {run.replace(/_/g, ' ')}
+              </option>
+            ))}
+          </select>
+        </div>
+        
         <div className="flex items-center gap-2">
+          <select
+            value={selectedIndex}
+            onChange={(e) => setSelectedIndex(Number(e.target.value))}
+            className="w-40 bg-gray-800 text-white p-2 rounded border border-gray-700 text-sm"
+          >
+            {Array.from({length: steps}, (_, i) => (
+              <option key={i} value={i}>
+                Step {i + 1}
+              </option>
+            ))}
+          </select>
+          
           <button 
-            onClick={() => setShowUnits(!showUnits)}
+            onClick={() => setShowSettings(!showSettings)}
             className="p-2 rounded hover:bg-gray-800 text-gray-400 transition-colors"
           >
-            <Menu size={16} />
+            <Settings size={16} />
           </button>
-
-          <div className="flex-1">
-            <select 
-              value={selectedRun} 
-              onChange={(e) => setSelectedRun(e.target.value)}
-              className="w-full bg-gray-800 text-white p-2 rounded border border-gray-700 text-sm"
-            >
-              {runs.map(run => (
-                <option key={run} value={run}>
-                  {run.replace(/_/g, ' ')}
-                </option>
-              ))}
-            </select>
-          </div>
-          
-          <div className="flex items-center gap-2">
-            <select
-              value={selectedIndex}
-              onChange={(e) => setSelectedIndex(Number(e.target.value))}
-              className="w-40 bg-gray-800 text-white p-2 rounded border border-gray-700 text-sm"
-            >
-              {Array.from({length: steps}, (_, i) => (
-                <option key={i} value={i}>
-                  Step {i + 1}
-                </option>
-              ))}
-            </select>
-            
-            <button 
-              onClick={() => setShowSettings(!showSettings)}
-              className="p-2 rounded hover:bg-gray-800 text-gray-400 transition-colors"
-            >
-              <Settings size={16} />
-            </button>
-          </div>
         </div>
       </div>
+    </div>
+  );
+
+  return (
+    <div className="fixed inset-0 flex flex-col bg-gray-950">
+      {/* Shared Top Bar - Always visible */}
+      <TopBar />
 
       {/* Main Content Area */}
       <div className="flex-1 flex">
+        {/* Units Panel - Visible based on showUnits state */}
         {showUnits && (
           <>
             <UnitsPanel
@@ -202,6 +214,7 @@ function App() {
             {selectedUnitId && (
               <UnitConfigPanel
                 unit={units.find(u => u.id === selectedUnitId)}
+                units={units}
                 onClose={() => setSelectedUnitId(null)}
                 onUpdateUnit={handleUpdateUnit}
               />
@@ -209,21 +222,40 @@ function App() {
           </>
         )}
 
-        <div className="flex-1">
-          <PhylogeneticViewer 
-            treeData={treeData}
-            experiment={selectedRun}
-            evoRunId={getEvoRunIdFromSelectedStep(lineageTreesIndex[selectedRun].all[selectedIndex].split('/')[2])}
-            showSettings={showSettings}
-            setShowSettings={setShowSettings}
+        {/* Main Content Container */}
+        <div className="flex-1 relative">
+          {/* View Switcher - Always visible */}
+          <ViewSwitcher 
+            activeView={currentView}
+            onViewChange={setCurrentView}
           />
+          
+          {/* Views Container - Full height and width */}
+          <div className="absolute inset-0">
+            {currentView === 'tree' ? (
+              <PhylogeneticViewer 
+                treeData={treeData}
+                experiment={selectedRun}
+                evoRunId={getEvoRunIdFromSelectedStep(lineageTreesIndex[selectedRun].all[selectedIndex])}
+                showSettings={showSettings}
+                setShowSettings={setShowSettings}
+              />
+            ) : (
+              <HeatmapViewer 
+                showSettings={showSettings}
+                setShowSettings={setShowSettings}
+              />
+            )}
+          </div>
         </div>
       </div>
     </div>
   );
 }
 
-function getEvoRunIdFromSelectedStep(selectedStep) {
+function getEvoRunIdFromSelectedStep(treeJSONfilePath) {
+  const treeJSONfilePathParts = treeJSONfilePath.split('/');
+  const selectedStep = treeJSONfilePathParts[treeJSONfilePathParts.length - 1];
   let suffixIndex;
   if (selectedStep.includes("_all.json")) {
     suffixIndex = selectedStep.indexOf("_all.json");
@@ -232,7 +264,10 @@ function getEvoRunIdFromSelectedStep(selectedStep) {
   } else if (selectedStep.includes("_nonmusical.json")) {
     suffixIndex = selectedStep.indexOf("_nonmusical.json");
   }
+  console.log("Selected step:", selectedStep);
+  console.log("Suffix index:", suffixIndex);
   const evoRunId = selectedStep.substring(selectedStep.indexOf("tree_")+5, suffixIndex);
+  console.log("Evo run ID:", evoRunId);
   return evoRunId;
 }
 

@@ -2,15 +2,15 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { Search, Settings } from 'lucide-react';
 import * as d3 from 'd3';
 import { pruneTreeForContextSwitches } from './phylogenetic-tree-common';
+import { LINEAGE_SOUNDS_BUCKET_HOST } from '../constants';
 
-const LINEAGE_SOUNDS_BUCKET_HOST = "https://ns9648k.web.sigma2.no";
 
 const PhylogeneticViewer = ({ treeData, experiment, evoRunId, showSettings, setShowSettings }) => {
   // State declarations
   const [hasInteracted, setHasInteracted] = useState(false);
   const [theme, setTheme] = useState('dark');
   const [measureContextSwitches, setMeasureContextSwitches] = useState(false);
-  const [reverbAmount, setReverbAmount] = useState(10);
+  const [reverbAmount, setReverbAmount] = useState(5);
 
   // Refs
   const searchTermRef = useRef('');  // Search ref instead of state
@@ -92,6 +92,7 @@ const PhylogeneticViewer = ({ treeData, experiment, evoRunId, showSettings, setS
   }, [hasInteracted]);
 
   const playAudioWithFade = async (d) => {
+    console.log('----- Playing audio:', d);
     if (!hasInteracted) return;
     if (!audioContextRef.current || audioContextRef.current.state === 'suspended') {
       console.log('Audio context not ready');

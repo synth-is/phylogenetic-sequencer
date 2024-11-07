@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Strudel REPL Test</title>
+  
+</head>
+<body>
+  <header>
+    <h1>Strudel REPL Test</h1>
+  </header>
+  <main>
+    <section>
+      <h2>REPL Test Page</h2>
+
+      <script src="https://unpkg.com/@strudel/repl@latest"></script>
+      <div id="strudel1"></div>
+      <br />
+      <div id="strudel2"></div> 
+      <script>
+        const repl1 = document.createElement('strudel-editor');
+        const pattern1 = 'sound("bd hh")';
+        repl1.setAttribute('code', pattern1);
+        document.getElementById('strudel1').append(repl1);
+
+        const repl2 = document.createElement('strudel-editor');
+        const pattern2 = 'sound("sd oh")';
+        repl2.setAttribute('code', pattern2);
+        document.getElementById('strudel2').append(repl2);
+
+        repl1.editor.id = 'hello';
+        repl2.editor.id = 'hello';
+        
+        function handleStartButtonClick(repl, pattern) {
+          console.log(repl.editor);
+          repl.editor.repl.evaluate(pattern)
+        }
+        function handleSoptButtonClick(repl) {
+          repl.editor.repl.stop();
+        }
+
+        function handleStartAllButtonClick() {
+          handleStartButtonClick(repl1, pattern1);
+          handleStartButtonClick(repl2, pattern2);
+        }
+
+      </script>
+      <button onclick="handleStartButtonClick(repl1, pattern1)">Start1</button>
+      <button onclick="handleSoptButtonClick(repl1)">Stop1</button>
+
+      <button onclick="handleStartButtonClick(repl2, pattern2)">Start2</button>
+      <button onclick="handleSoptButtonClick(repl2)">Stop2</button>
+
+      <button onclick="handleStartAllButtonClick()">Start All</button>
+    </section>
+  </main>
+</body>
+</html>

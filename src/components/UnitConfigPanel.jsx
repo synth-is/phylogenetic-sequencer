@@ -1,7 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { X } from 'lucide-react';
 import StrudelEditor from './StrudelEditor';
 import ChuckEditor from './ChuckEditor';
+import { DEFAULT_STRUDEL_CODE } from '../constants';
+import '@strudel/repl';
 
 const CollapsibleSection = ({ title, children }) => {
   const [isOpen, setIsOpen] = useState(true);
@@ -48,13 +50,63 @@ const Slider = ({ label, value, onChange, min = 0, max = 1, step = 0.01, centere
   );
 };
 
-const UnitConfigPanel = ({ unit, onClose, onUpdateUnit }) => {
-  const [activeTab, setActiveTab] = useState('Unit');
-  const [liveCodeEngine, setLiveCodeEngine] = useState('Strudel');
+const UnitConfigPanel = ({ unit, units, onClose, onUpdateUnit }) => {
   const tabs = ['Unit', 'Sampler', 'Live Code'];
+  const [activeTab, setActiveTab] = useState('Unit');
+  const [liveCodeEngine, setLiveCodeEngine] = useState(unit.liveCodeEngine || 'Strudel');
+  const editorRefs = useRef(new Map());
+
+  // Update liveCodeEngine when unit changes
+  useEffect(() => {
+    setLiveCodeEngine(unit.liveCodeEngine || 'Strudel');
+  }, [unit.id]);
 
   const handleValueChange = (key, value) => {
     onUpdateUnit(unit.id, { ...unit, [key]: value });
+  };
+
+  const handleEditorReady = (editor) => {
+    console.log('editorRefs.current.get(unit.id)', editorRefs.current.get(unit.id));
+
+    const shouldPopulateEditor = !editorRefs.current.get(unit.id);
+
+    console.log(`Strudel editor ready for unit ${unit.id}`);
+    editorRefs.current.set(unit.id, editor);
+
+
+    if (shouldPopulateEditor) {
+      
+      // editor.setCode(Date.now().toString());
+      console.log('editor.repl', editor.repl);
+      // editor.repl.setPattern( note("c3", ["eb3", "g3"]).sound("sawtooth").delay(1) );
+      const randomFastValue = Math.floor(Math.random() * 10) + 1; // Random integer between 1 and 10
+      const waveforms = ["sawtooth", "square", "triangle", "sine"];
+      const randomWaveform = waveforms[Math.floor(Math.random() * waveforms.length)];
+      const code = `note("c2 <eb2 <g2 g1>>".fast(${randomFastValue})).sound("${randomWaveform}")`;
+      editorRefs.current.get(unit.id).setCode( code );
+      editor.repl.evaluate( code );
+      // editor.repl.setCode(`note("c2 <eb2 <g2 g1>>".fast(2)).sound("<sawtooth square triangle sine>").delay(1)`);
+      
+      editor.repl.stop();
+
+    }
+  };
+
+  const handlePatternUpdate = (patternId, updateInfo) => {
+    console.log(`Pattern ${patternId} updated for unit ${updateInfo.unitId}:`, updateInfo);
+  };
+
+  const handleCodeChange = (newCode) => {
+    console.log(`Handling code change for unit ${unit.id}:`, newCode);
+    onUpdateUnit(unit.id, {
+      ...unit,
+      strudelCode: newCode
+    });
+  };
+
+  const handleEngineChange = (engine) => {
+    setLiveCodeEngine(engine);
+    onUpdateUnit(unit.id, { ...unit, liveCodeEngine: engine });
   };
 
   return (
@@ -185,10 +237,9 @@ const UnitConfigPanel = ({ unit, onClose, onUpdateUnit }) => {
 
         {activeTab === 'Live Code' && (
           <div className="space-y-4">
-            {/* Smaller toggle buttons */}
             <div className="flex gap-1 p-1 bg-gray-800 rounded">
               <button
-                onClick={() => setLiveCodeEngine('Strudel')}
+                onClick={() => handleEngineChange('Strudel')}
                 className={`flex-1 px-2 py-1 rounded text-xs ${
                   liveCodeEngine === 'Strudel'
                     ? 'bg-blue-600 text-white'
@@ -198,7 +249,7 @@ const UnitConfigPanel = ({ unit, onClose, onUpdateUnit }) => {
                 Strudel
               </button>
               <button
-                onClick={() => setLiveCodeEngine('ChucK')}
+                onClick={() => handleEngineChange('ChucK')}
                 className={`flex-1 px-2 py-1 rounded text-xs ${
                   liveCodeEngine === 'ChucK'
                     ? 'bg-blue-600 text-white'
@@ -208,7 +259,21 @@ const UnitConfigPanel = ({ unit, onClose, onUpdateUnit }) => {
                 ChucK
               </button>
             </div>
-            {liveCodeEngine === 'Strudel' ? <StrudelEditor /> : <ChuckEditor />}
+            <div className="relative flex-1" style={{ minHeight: '300px' }}>
+              {liveCodeEngine === 'Strudel' && (
+                <StrudelEditor
+                  key={unit.id} // Force remount only when unit changes
+                  unitId={unit.id}
+                  // initialCode={unit.strudelCode || DEFAULT_STRUDEL_CODE}
+                  onCodeChange={(newCode) => {
+                    console.log(`Code change in unit ${unit.id}:`, newCode);
+                    handleValueChange('strudelCode', newCode);
+                  }}
+                  onEditorReady={handleEditorReady}
+                />
+              )}
+              {liveCodeEngine === 'ChucK' && <ChuckEditor />}
+            </div>
           </div>
         )}
       </div>
