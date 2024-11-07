@@ -244,6 +244,7 @@ function App() {
               <HeatmapViewer 
                 showSettings={showSettings}
                 setShowSettings={setShowSettings}
+                matrixUrl={"https://ns9648k.web.sigma2.no/lineage-matrices/matrix_01JA6KRDQ1JR9A8BKRXCBGBYYB_evoConf_singleMap_refSingleEmb_spectralSpreadAndFlux__2024-10.json"}
               />
             )}
           </div>
