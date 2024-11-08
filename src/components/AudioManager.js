@@ -7,6 +7,7 @@ class AudioManager {
     this.dryGainNode = null;
     this.wetGainNode = null;
     this.masterGainNode = null;
+    this.playingCells = new Set(); // Track cells by their key
   }
 
   async initialize() {
@@ -36,6 +37,10 @@ class AudioManager {
     }
   }
 
+  isCellPlaying(i, j) {
+    return this.playingCells.has(`${i}-${j}`);
+  }
+
   setReverbMix(wetAmount) {
     if (!this.context) return;
     
@@ -49,11 +54,12 @@ class AudioManager {
   async playSound(url, cellIndices) {
     if (!this.context) await this.initialize();
 
-    // Check if this sound is already playing
-    const existingVoice = Array.from(this.voices.values())
-      .find(voice => voice.url === url && !voice.isReleasing);
+    const cellKey = `${cellIndices.i}-${cellIndices.j}`;
     
-    if (existingVoice) return { voiceId: existingVoice.id, cellIndices };
+    // If this cell is already playing, don't play again
+    if (this.playingCells.has(cellKey)) {
+      return null;
+    }
 
     // Find a free voice or the oldest one
     let voiceId = this.findFreeVoice();
@@ -75,26 +81,37 @@ class AudioManager {
       gainNode.connect(this.dryGainNode);
       gainNode.connect(this.convolverNode);
 
-      source.start();
+      this.playingCells.add(cellKey);
 
       // Store voice data
-      this.voices.set(voiceId, {
+      const voice = {
         id: voiceId,
         url,
         source,
         gainNode,
         startTime: this.context.currentTime,
         isReleasing: false,
+        cellKey,
         cellIndices
-      });
-
-      source.onended = () => {
-        this.releaseVoice(voiceId);
       };
+
+      this.voices.set(voiceId, voice);
+
+      const cleanupVoice = () => {
+        this.playingCells.delete(cellKey);
+        this.releaseVoice(voiceId, true);
+      };
+
+      source.onended = cleanupVoice;
+      source.start();
+
+      // Set a safety timeout in case onended doesn't fire
+      setTimeout(cleanupVoice, (audioBuffer.duration * 1000) + 100);
 
       return { voiceId, cellIndices };
     } catch (error) {
       console.error('Error playing sound:', error);
+      this.playingCells.delete(cellKey);
       return null;
     }
   }
@@ -107,6 +124,9 @@ class AudioManager {
 
     if (immediate) {
       try {
+        if (voice.cellKey) {
+          this.playingCells.delete(voice.cellKey);
+        }
         voice.source.stop();
         voice.source.disconnect();
         voice.gainNode.disconnect();
@@ -118,10 +138,11 @@ class AudioManager {
       voice.gainNode.gain.linearRampToValueAtTime(0, this.context.currentTime + 0.1);
       setTimeout(() => {
         try {
-          if (voice.source) {
-            voice.source.stop();
-            voice.source.disconnect();
+          if (voice.cellKey) {
+            this.playingCells.delete(voice.cellKey);
           }
+          voice.source.stop();
+          voice.source.disconnect();
           voice.gainNode.disconnect();
           this.voices.delete(voiceId);
         } catch (e) {
@@ -162,6 +183,7 @@ class AudioManager {
   cleanup() {
     Array.from(this.voices.keys()).forEach(id => this.releaseVoice(id, true));
     this.voices.clear();
+    this.playingCells.clear();
   }
 }
 

@@ -28,10 +28,10 @@ const HeatmapViewer = ({
   const [matrixData, setMatrixData] = useState(null);
   const [selectedGeneration, setSelectedGeneration] = useState(2);
   const [selectedColormap, setSelectedColormap] = useState('plasma');
-  const [hasInteracted, setHasInteracted] = useState(false);
   const [tooltip, setTooltip] = useState({ show: false, content: '', x: 0, y: 0 });
   const [maxVoices, setMaxVoices] = useState(4);
-  const [currentlyPlayingCell, setCurrentlyPlayingCell] = useState(null);
+  const [silentMode, setSilentMode] = useState(false);
+  const [hasInteracted, setHasInteracted] = useState(false);
   
   // UI state
   const [useSquareCells, setUseSquareCells] = useState(true);
@@ -45,6 +45,10 @@ const HeatmapViewer = ({
   const transformRef = useRef(d3.zoomIdentity);
   const audioManagerRef = useRef(null);
   const mouseMoveThrottleRef = useRef(null);
+
+  const currentCellRef = useRef(null);
+  const currentlyPlayingCellRef = useRef(null);
+  const hasInteractedRef = useRef(false);
 
   // Initialize AudioManager
   useEffect(() => {
@@ -140,22 +144,22 @@ const HeatmapViewer = ({
         const x = j * cellWidth;
         const y = i * cellHeight;
         
-        // Handle currently playing cell
-        if (currentlyPlayingCell?.i === i && currentlyPlayingCell?.j === j) {
+        // Use ref for currently playing cell
+        const playingCell = currentlyPlayingCellRef.current;
+        if (playingCell?.i === i && playingCell?.j === j) {
           ctx.fillStyle = '#ff0000';
         } else {
           ctx.fillStyle = getColorForValue(cell.score);
         }
         
         ctx.fillRect(x, y, cellWidth, cellHeight);
-        
         ctx.strokeStyle = theme === 'dark' ? '#2a2a2a' : '#d1d5db';
         ctx.strokeRect(x, y, cellWidth, cellHeight);
       });
     });
     
     ctx.restore();
-  }, [matrixData, selectedGeneration, getColorForValue, theme, useSquareCells, currentlyPlayingCell]);
+  }, [matrixData, selectedGeneration, getColorForValue, theme, useSquareCells]);
 
   // Handle window resize
   useEffect(() => {
@@ -204,6 +208,24 @@ const HeatmapViewer = ({
     };
   }, [matrixData]); 
 
+
+  useEffect(() => {
+    const handleKeyPress = (e) => {
+      if (e.key === 'Alt') {
+        setSilentMode(e.type === 'keydown');
+      }
+    };
+  
+    window.addEventListener('keydown', handleKeyPress);
+    window.addEventListener('keyup', handleKeyPress);
+  
+    return () => {
+      window.removeEventListener('keydown', handleKeyPress);
+      window.removeEventListener('keyup', handleKeyPress);
+    };
+  }, []);
+
+
   const getMatrixIndices = useCallback((canvasX, canvasY) => {
     if (!matrixData || !canvasRef.current) return null;
   
@@ -232,14 +254,8 @@ const HeatmapViewer = ({
     return null;
   }, [matrixData, selectedGeneration, useSquareCells]);  
 
-  const playSound = async (cell, indices) => {
-    if (!hasInteracted || !audioManagerRef.current) return;
-  
-    const cellKey = `${indices.i}-${indices.j}`;
-    
-    // Check if this exact sound is already playing
-    const isPlayingCell = activeCells.has(cellKey);
-    if (isPlayingCell) return;
+  const playSound = useCallback(async (cell, indices) => {
+    if (!hasInteractedRef.current || !audioManagerRef.current) return;
   
     try {
       const config = matrixData.evolutionRunConfig;
@@ -248,59 +264,74 @@ const HeatmapViewer = ({
       const result = await audioManagerRef.current.playSound(audioUrl, indices);
       
       if (result) {
-        const { voiceId, cellIndices } = result;
-        setActiveCells(prev => new Map(prev).set(cellKey, { voiceId, cellIndices }));
-  
-        // Update just the state
-        setCurrentlyPlayingCell(indices);
+        currentlyPlayingCellRef.current = indices;
+        requestAnimationFrame(drawHeatmap);
+        
+        const voice = audioManagerRef.current.voices.get(result.voiceId);
+        if (voice?.source) {
+          const originalOnEnded = voice.source.onended;
+          voice.source.onended = () => {
+            if (originalOnEnded) originalOnEnded();
+            currentlyPlayingCellRef.current = null;
+            requestAnimationFrame(drawHeatmap);
+          };
+        }
       }
     } catch (error) {
       console.error('Error playing sound:', error);
     }
-  };
+  }, [matrixData]);
 
   // Add debounce/throttle for mouse movement
   const handleMouseMove = useCallback((event) => {
     if (!matrixData || !canvasRef.current) return;
-
-    // Clear existing throttle timeout
-    if (mouseMoveThrottleRef.current) {
-      clearTimeout(mouseMoveThrottleRef.current);
-    }
-
-    mouseMoveThrottleRef.current = setTimeout(() => {
-      const rect = canvasRef.current.getBoundingClientRect();
-      const canvasX = event.clientX - rect.left;
-      const canvasY = event.clientY - rect.top;
+  
+    const rect = canvasRef.current.getBoundingClientRect();
+    const canvasX = event.clientX - rect.left;
+    const canvasY = event.clientY - rect.top;
+    
+    const indices = getMatrixIndices(canvasX, canvasY);
+    
+    if (indices) {
+      const { i, j } = indices;
+      const cell = matrixData.scoreAndGenomeMatrices[selectedGeneration][i][j];
       
-      const indices = getMatrixIndices(canvasX, canvasY);
-      if (indices) {
-        const { i, j } = indices;
-        const cell = matrixData.scoreAndGenomeMatrices[selectedGeneration][i][j];
+      if (cell.score !== null) {
+        setTooltip({
+          show: true,
+          content: `Score: ${cell.score.toFixed(3)}`,
+          x: event.clientX,
+          y: event.clientY
+        });
         
-        if (cell.score !== null) {
-          setTooltip({
-            show: true,
-            content: `Score: ${cell.score.toFixed(3)}`,
-            x: event.clientX,
-            y: event.clientY
-          });
+        const cellKey = `${i}-${j}`;
+        const currentKey = currentCellRef.current ? 
+          `${currentCellRef.current.i}-${currentCellRef.current.j}` : null;
+        
+        if (cellKey !== currentKey) {
+          currentCellRef.current = { i, j };
           
-          playSound(cell, { i, j });
-        } else {
-          setTooltip({ show: false, content: '', x: 0, y: 0 });
+          // Only play sound if not in silent mode and cell isn't already playing
+          if (!silentMode && hasInteractedRef.current && !audioManagerRef.current.isCellPlaying(i, j)) {
+            playSound(cell, { i, j });
+          }
         }
       } else {
         setTooltip({ show: false, content: '', x: 0, y: 0 });
+        currentCellRef.current = null;
       }
-    }, 50); // 50ms throttle
-  }, [matrixData, selectedGeneration, hasInteracted]);
+    } else {
+      setTooltip({ show: false, content: '', x: 0, y: 0 });
+      currentCellRef.current = null;
+    }
+  }, [matrixData, selectedGeneration, silentMode]);
 
   const handleClick = async () => {
     if (!hasInteracted) {
       try {
         await audioManagerRef.current?.resume();
         setHasInteracted(true);
+        hasInteractedRef.current = true;
       } catch (err) {
         console.error('Error resuming audio context:', err);
       }
@@ -400,6 +431,20 @@ const HeatmapViewer = ({
             />
             <span className="text-sm text-gray-300 w-8">{maxVoices}</span>
           </div>
+        </div>
+
+
+        <div className="space-y-2">
+          <label className="text-sm text-white">Navigation Mode</label>
+          <label className="flex items-center gap-2 text-sm cursor-pointer text-gray-300">
+            <input
+              type="checkbox"
+              checked={silentMode}
+              onChange={(e) => setSilentMode(e.target.checked)}
+              className="rounded bg-gray-700 border-gray-600"
+            />
+            Silent mode (or hold Alt key)
+          </label>
         </div>
 
         {/* Existing settings continue... */}
