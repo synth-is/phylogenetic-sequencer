@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Settings } from 'lucide-react';
 import * as d3 from 'd3';
+import AudioManager from './AudioManager';
 
 const COLORMAP_OPTIONS = {
   plasma: [
@@ -29,69 +30,55 @@ const HeatmapViewer = ({
   const [selectedColormap, setSelectedColormap] = useState('plasma');
   const [hasInteracted, setHasInteracted] = useState(false);
   const [tooltip, setTooltip] = useState({ show: false, content: '', x: 0, y: 0 });
+  const [maxVoices, setMaxVoices] = useState(4);
+  const [currentlyPlayingCell, setCurrentlyPlayingCell] = useState(null);
   
-  // New state for additional features
+  // UI state
   const [useSquareCells, setUseSquareCells] = useState(true);
   const [theme, setTheme] = useState('dark');
   const [reverbAmount, setReverbAmount] = useState(5);
-  const [currentlyPlayingCell, setCurrentlyPlayingCell] = useState(null);
-
-  // Original refs
+  const [activeCells, setActiveCells] = useState(new Map());
+  
+  // Refs
   const containerRef = useRef(null);
   const canvasRef = useRef(null);
   const transformRef = useRef(d3.zoomIdentity);
-  const audioContextRef = useRef(null);
-  const currentSourceRef = useRef(null);
-  const currentGainNodeRef = useRef(null);
-  
-  // New refs for additional features
-  const currentPlayingUrlRef = useRef(null);
-  const convolverNodeRef = useRef(null);
-  const dryGainNodeRef = useRef(null);
-  const wetGainNodeRef = useRef(null);
+  const audioManagerRef = useRef(null);
+  const mouseMoveThrottleRef = useRef(null);
 
-  // Initialize audio context with reverb
+  // Initialize AudioManager
   useEffect(() => {
-    if (!audioContextRef.current) {
-      audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
-      convolverNodeRef.current = audioContextRef.current.createConvolver();
-      dryGainNodeRef.current = audioContextRef.current.createGain();
-      wetGainNodeRef.current = audioContextRef.current.createGain();
-  
-      dryGainNodeRef.current.connect(audioContextRef.current.destination);
-      convolverNodeRef.current.connect(wetGainNodeRef.current);
-      wetGainNodeRef.current.connect(audioContextRef.current.destination);
-  
-      // Load reverb impulse response
-      fetch('/WIDEHALL-1.wav')
-        .then(response => response.arrayBuffer())
-        .then(arrayBuffer => audioContextRef.current.decodeAudioData(arrayBuffer))
-        .then(buffer => {
-          convolverNodeRef.current.buffer = buffer;
-        })
-        .catch(error => console.error('Error loading reverb:', error));
+    if (!audioManagerRef.current) {
+      audioManagerRef.current = new AudioManager();
+      audioManagerRef.current.initialize();
+      audioManagerRef.current.maxVoices = maxVoices;
     }
-  
-    // No cleanup of audio context - just cleanup nodes
+  }, []);
+
+  // Update AudioManager maxVoices when setting changes
+  useEffect(() => {
+    if (audioManagerRef.current) {
+      audioManagerRef.current.maxVoices = maxVoices;
+    }
+  }, [maxVoices]);
+
+  // Update reverb mix
+  useEffect(() => {
+    if (audioManagerRef.current) {
+      audioManagerRef.current.setReverbMix(reverbAmount);
+    }
+  }, [reverbAmount]);
+
+  // Handle cleanup
+  useEffect(() => {
     return () => {
-      if (currentSourceRef.current) {
-        currentSourceRef.current.stop();
-        currentSourceRef.current.disconnect();
-      }
-      if (currentGainNodeRef.current) {
-        currentGainNodeRef.current.disconnect();
+      if (audioManagerRef.current) {
+        audioManagerRef.current.cleanup();
       }
     };
   }, []);
 
-  // Update reverb mix
-  useEffect(() => {
-    if (!wetGainNodeRef.current || !dryGainNodeRef.current) return;
-    
-    const wetAmount = reverbAmount / 100;
-    wetGainNodeRef.current.gain.setValueAtTime(wetAmount, audioContextRef.current.currentTime);
-    dryGainNodeRef.current.gain.setValueAtTime(1 - wetAmount, audioContextRef.current.currentTime);
-  }, [reverbAmount]);
+
 
   // Fetch matrix data
   useEffect(() => {
@@ -245,113 +232,74 @@ const HeatmapViewer = ({
     return null;
   }, [matrixData, selectedGeneration, useSquareCells]);  
 
-  const playAudio = async (genomeId, duration, noteDelta, velocity, cellIndices) => {
-    if (!hasInteracted || !audioContextRef.current) return;
-    
-    const audioUrl = `https://ns9648k.web.sigma2.no/evoConf_singleMap_refSingleEmb_spectralSpreadAndFlux/01JA6KRDQ1JR9A8BKRXCBGBYYB_evoConf_singleMap_refSingleEmb_spectralSpreadAndFlux__2024-10/${genomeId}-${duration}_${noteDelta}_${velocity}.wav`;
-    
-    // Skip if same sound is already playing
-    if (currentPlayingUrlRef.current === audioUrl) return;
-    
-    try {
-      // Cancel any pending cleanup timeouts
-      if (window.audioCleanupTimeout) {
-        clearTimeout(window.audioCleanupTimeout);
-      }
+  const playSound = async (cell, indices) => {
+    if (!hasInteracted || !audioManagerRef.current) return;
   
-      // Smoothly fade out current sound if playing
-      if (currentSourceRef.current && currentGainNodeRef.current) {
-        const oldGain = currentGainNodeRef.current;
-        const oldSource = currentSourceRef.current;
-        
-        oldGain.gain.cancelScheduledValues(audioContextRef.current.currentTime);
-        oldGain.gain.setValueAtTime(oldGain.gain.value, audioContextRef.current.currentTime);
-        oldGain.gain.linearRampToValueAtTime(0, audioContextRef.current.currentTime + 0.1);
-        
-        window.audioCleanupTimeout = setTimeout(() => {
-          try {
-            oldSource.stop();
-            oldSource.disconnect();
-            oldGain.disconnect();
-          } catch (e) {
-            console.error('Error cleaning up old audio:', e);
-          }
-        }, 100);
+    const cellKey = `${indices.i}-${indices.j}`;
+    
+    // Check if this exact sound is already playing
+    const isPlayingCell = activeCells.has(cellKey);
+    if (isPlayingCell) return;
+  
+    try {
+      const config = matrixData.evolutionRunConfig;
+      const audioUrl = `https://ns9648k.web.sigma2.no/evoConf_singleMap_refSingleEmb_spectralSpreadAndFlux/01JA6KRDQ1JR9A8BKRXCBGBYYB_evoConf_singleMap_refSingleEmb_spectralSpreadAndFlux__2024-10/${cell.genomeId}-${config.classScoringDurations[0]}_${config.classScoringNoteDeltas[0]}_${config.classScoringVelocities[0]}.wav`;
+  
+      const result = await audioManagerRef.current.playSound(audioUrl, indices);
+      
+      if (result) {
+        const { voiceId, cellIndices } = result;
+        setActiveCells(prev => new Map(prev).set(cellKey, { voiceId, cellIndices }));
+  
+        // Update just the state
+        setCurrentlyPlayingCell(indices);
       }
-      
-      currentPlayingUrlRef.current = audioUrl;
-      setCurrentlyPlayingCell(cellIndices);
-      
-      const response = await fetch(audioUrl);
-      const arrayBuffer = await response.arrayBuffer();
-      const audioBuffer = await audioContextRef.current.decodeAudioData(arrayBuffer);
-      
-      currentSourceRef.current = audioContextRef.current.createBufferSource();
-      currentSourceRef.current.buffer = audioBuffer;
-      
-      currentGainNodeRef.current = audioContextRef.current.createGain();
-      currentGainNodeRef.current.gain.setValueAtTime(0, audioContextRef.current.currentTime);
-      currentGainNodeRef.current.gain.linearRampToValueAtTime(0.5, audioContextRef.current.currentTime + 0.1);
-      
-      // Connect through reverb chain
-      currentSourceRef.current.connect(currentGainNodeRef.current);
-      currentGainNodeRef.current.connect(dryGainNodeRef.current);
-      currentGainNodeRef.current.connect(convolverNodeRef.current);
-      
-      currentSourceRef.current.start();
-      
-      currentSourceRef.current.onended = () => {
-        currentPlayingUrlRef.current = null;
-        setCurrentlyPlayingCell(null);
-      };
     } catch (error) {
-      console.error('Error playing audio:', error);
-      currentPlayingUrlRef.current = null;
-      setCurrentlyPlayingCell(null);
+      console.error('Error playing sound:', error);
     }
   };
 
   // Add debounce/throttle for mouse movement
-const handleMouseMove = useCallback((event) => {
-  if (!matrixData) return;
+  const handleMouseMove = useCallback((event) => {
+    if (!matrixData || !canvasRef.current) return;
 
-  const rect = canvasRef.current.getBoundingClientRect();
-  const canvasX = event.clientX - rect.left;
-  const canvasY = event.clientY - rect.top;
-  
-  const indices = getMatrixIndices(canvasX, canvasY);
-  if (indices) {
-    const { i, j } = indices;
-    const cell = matrixData.scoreAndGenomeMatrices[selectedGeneration][i][j];
-    
-    if (cell.score !== null) {
-      setTooltip({
-        show: true,
-        content: `Score: ${cell.score.toFixed(3)}`,
-        x: event.clientX,
-        y: event.clientY
-      });
-      
-      const config = matrixData.evolutionRunConfig;
-      playAudio(
-        cell.genomeId,
-        config.classScoringDurations[0],
-        config.classScoringNoteDeltas[0],
-        config.classScoringVelocities[0],
-        { i, j }
-      );
-    } else {
-      setTooltip({ show: false, content: '', x: 0, y: 0 });
+    // Clear existing throttle timeout
+    if (mouseMoveThrottleRef.current) {
+      clearTimeout(mouseMoveThrottleRef.current);
     }
-  } else {
-    setTooltip({ show: false, content: '', x: 0, y: 0 });
-  }
-}, [matrixData, selectedGeneration, getMatrixIndices]);
+
+    mouseMoveThrottleRef.current = setTimeout(() => {
+      const rect = canvasRef.current.getBoundingClientRect();
+      const canvasX = event.clientX - rect.left;
+      const canvasY = event.clientY - rect.top;
+      
+      const indices = getMatrixIndices(canvasX, canvasY);
+      if (indices) {
+        const { i, j } = indices;
+        const cell = matrixData.scoreAndGenomeMatrices[selectedGeneration][i][j];
+        
+        if (cell.score !== null) {
+          setTooltip({
+            show: true,
+            content: `Score: ${cell.score.toFixed(3)}`,
+            x: event.clientX,
+            y: event.clientY
+          });
+          
+          playSound(cell, { i, j });
+        } else {
+          setTooltip({ show: false, content: '', x: 0, y: 0 });
+        }
+      } else {
+        setTooltip({ show: false, content: '', x: 0, y: 0 });
+      }
+    }, 50); // 50ms throttle
+  }, [matrixData, selectedGeneration, hasInteracted]);
 
   const handleClick = async () => {
     if (!hasInteracted) {
       try {
-        await audioContextRef.current?.resume();
+        await audioManagerRef.current?.resume();
         setHasInteracted(true);
       } catch (err) {
         console.error('Error resuming audio context:', err);
@@ -367,6 +315,99 @@ const handleMouseMove = useCallback((event) => {
     );
   }
 
+  // Settings panel enhanced with polyphony control
+  const renderSettings = () => (
+    <div className="absolute right-0 top-12 p-4 bg-gray-900/95 backdrop-blur rounded-l w-64">
+      <div className="space-y-4">
+        {/* Existing settings... */}
+
+        <div>
+          <label className="text-sm text-white">Color Palette</label>
+          <select
+            value={selectedColormap}
+            onChange={(e) => setSelectedColormap(e.target.value)}
+            className="mt-1 w-full bg-gray-800 text-white rounded px-2 py-1 text-sm"
+          >
+            {Object.keys(COLORMAP_OPTIONS).map(name => (
+              <option key={name} value={name}>
+                {name.charAt(0).toUpperCase() + name.slice(1)}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="space-y-2">
+          <label className="text-sm text-white">Cell Shape</label>
+          <label className="flex items-center gap-2 text-sm cursor-pointer text-gray-300">
+            <input
+              type="checkbox"
+              checked={useSquareCells}
+              onChange={(e) => setUseSquareCells(e.target.checked)}
+              className="rounded bg-gray-700 border-gray-600"
+            />
+            Use square cells
+          </label>
+        </div>
+
+        <div className="space-y-2">
+          <label className="text-sm text-white">Reverb Amount</label>
+          <div className="flex items-center gap-2">
+            <input
+              type="range"
+              className="flex-1 h-2 bg-gray-700"
+              min="0"
+              max="100"
+              value={reverbAmount}
+              onChange={(e) => setReverbAmount(Number(e.target.value))}
+            />
+            <span className="text-sm text-gray-300 w-8">{reverbAmount}%</span>
+          </div>
+        </div>
+
+        <div className="space-y-2">
+          <label className="text-sm text-white">Appearance</label>
+          <label className="flex items-center gap-2 text-sm cursor-pointer text-gray-300">
+            <input
+              type="checkbox"
+              checked={theme === 'light'}
+              onChange={(e) => setTheme(e.target.checked ? 'light' : 'dark')}
+              className="rounded bg-gray-700 border-gray-600"
+            />
+            Light theme
+          </label>
+        </div>
+
+        <div className="space-y-2">
+          <label className="text-sm text-white">Coverage</label>
+          <p className="text-sm text-gray-300">
+            {matrixData.coveragePercentage[selectedGeneration]}%
+          </p>
+        </div>
+
+
+        {/* New Polyphony Control */}
+        <div className="space-y-2">
+          <label className="text-sm text-white">Polyphony (Max Voices)</label>
+          <div className="flex items-center gap-2">
+            <input
+              type="range"
+              className="flex-1 h-2 bg-gray-700"
+              min="1"
+              max="8"
+              step="1"
+              value={maxVoices}
+              onChange={(e) => setMaxVoices(Number(e.target.value))}
+            />
+            <span className="text-sm text-gray-300 w-8">{maxVoices}</span>
+          </div>
+        </div>
+
+        {/* Existing settings continue... */}
+      </div>
+    </div>
+  );
+
+
   return (
     <div className={`relative flex-1 ${theme === 'light' ? 'bg-gray-100' : 'bg-gray-950'}`} 
          onClick={handleClick} 
@@ -377,7 +418,15 @@ const handleMouseMove = useCallback((event) => {
         height={800}
         className="w-full h-full"
         onMouseMove={handleMouseMove}
-        onMouseLeave={() => setTooltip({ show: false, content: '', x: 0, y: 0 })}
+        onMouseLeave={() => {
+          setTooltip({ show: false, content: '', x: 0, y: 0 });
+          // Optional: release all voices when mouse leaves
+          if (audioManagerRef.current) {
+            audioManagerRef.current.cleanup();
+            setActiveCells(new Map());
+            setCurrentlyPlayingCell(null);
+          }
+        }}
       />
       
       {tooltip.show && (
@@ -411,74 +460,7 @@ const handleMouseMove = useCallback((event) => {
       </div>
       
       {/* Enhanced Settings panel */}
-      {showSettings && (
-        <div className={`absolute right-0 top-12 p-4 bg-gray-900/95 backdrop-blur rounded-l w-64`}>
-          <div className="space-y-4">
-            <div>
-              <label className="text-sm text-white">Color Palette</label>
-              <select
-                value={selectedColormap}
-                onChange={(e) => setSelectedColormap(e.target.value)}
-                className="mt-1 w-full bg-gray-800 text-white rounded px-2 py-1 text-sm"
-              >
-                {Object.keys(COLORMAP_OPTIONS).map(name => (
-                  <option key={name} value={name}>
-                    {name.charAt(0).toUpperCase() + name.slice(1)}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="space-y-2">
-              <label className="text-sm text-white">Cell Shape</label>
-              <label className="flex items-center gap-2 text-sm cursor-pointer text-gray-300">
-                <input
-                  type="checkbox"
-                  checked={useSquareCells}
-                  onChange={(e) => setUseSquareCells(e.target.checked)}
-                  className="rounded bg-gray-700 border-gray-600"
-                />
-                Use square cells
-              </label>
-            </div>
-
-            <div className="space-y-2">
-              <label className="text-sm text-white">Reverb Amount</label>
-              <div className="flex items-center gap-2">
-                <input
-                  type="range"
-                  className="flex-1 h-2 bg-gray-700"
-                  min="0"
-                  max="100"
-                  value={reverbAmount}
-                  onChange={(e) => setReverbAmount(Number(e.target.value))}
-                />
-                <span className="text-sm text-gray-300 w-8">{reverbAmount}%</span>
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <label className="text-sm text-white">Appearance</label>
-              <label className="flex items-center gap-2 text-sm cursor-pointer text-gray-300">
-                <input
-                  type="checkbox"
-                  checked={theme === 'light'}
-                  onChange={(e) => setTheme(e.target.checked ? 'light' : 'dark')}
-                  className="rounded bg-gray-700 border-gray-600"
-                />
-                Light theme
-              </label>
-            </div>
-
-            <div className="space-y-2">
-              <label className="text-sm text-white">Coverage</label>
-              <p className="text-sm text-gray-300">
-                {matrixData.coveragePercentage[selectedGeneration]}%
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
+      {showSettings && renderSettings()}
       
       {!hasInteracted && (
         <div className="absolute inset-0 flex items-center justify-center bg-black/50 backdrop-blur-sm">
