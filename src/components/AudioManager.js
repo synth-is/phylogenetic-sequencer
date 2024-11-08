@@ -1,30 +1,65 @@
 class AudioManager {
   constructor() {
     this.context = null;
-    this.maxVoices = 4; // Number of simultaneous sounds
-    this.voices = new Map(); // Map voice ID to voice data
-    this.convolverNode = null;
-    this.dryGainNode = null;
-    this.wetGainNode = null;
-    this.masterGainNode = null;
-    this.playingCells = new Set(); // Track cells by their key
+    this.maxVoices = 4;
+    this.voices = new Map();
+    this.playingCells = new Set();
+
+    // Audio processing nodes
+    this.inputBus = null;      // Combines all voice inputs
+    this.compressor = null;    // Dynamics control
+    this.convolverNode = null; // Reverb
+    this.dryGainNode = null;   // Dry signal
+    this.wetGainNode = null;   // Wet (reverb) signal
+    this.masterCompressor = null; // Final stage compression
+    this.masterGain = null;    // Final output control
   }
 
   async initialize() {
     if (this.context) return;
 
     this.context = new (window.AudioContext || window.webkitAudioContext)();
-    this.masterGainNode = this.context.createGain();
-    this.masterGainNode.connect(this.context.destination);
 
-    // Setup reverb chain
+    // Create input bus (summing node)
+    this.inputBus = this.context.createGain();
+    this.inputBus.gain.value = 1.0 / this.maxVoices; // Prevent clipping from summing
+
+    // Create compressor for voice mixing
+    this.compressor = this.context.createDynamicsCompressor();
+    this.compressor.threshold.value = -24;
+    this.compressor.knee.value = 12;
+    this.compressor.ratio.value = 4;
+    this.compressor.attack.value = 0.005;
+    this.compressor.release.value = 0.250;
+
+    // Create reverb chain
     this.convolverNode = this.context.createConvolver();
     this.dryGainNode = this.context.createGain();
     this.wetGainNode = this.context.createGain();
 
-    this.dryGainNode.connect(this.masterGainNode);
+    // Create master compressor
+    this.masterCompressor = this.context.createDynamicsCompressor();
+    this.masterCompressor.threshold.value = -12;
+    this.masterCompressor.knee.value = 12;
+    this.masterCompressor.ratio.value = 3;
+    this.masterCompressor.attack.value = 0.025;
+    this.masterCompressor.release.value = 0.250;
+
+    // Create master gain
+    this.masterGain = this.context.createGain();
+    this.masterGain.gain.value = 0.8; // Leave headroom
+
+    // Connect the processing chain
+    this.inputBus.connect(this.compressor);
+    this.compressor.connect(this.dryGainNode);
+    this.compressor.connect(this.convolverNode);
     this.convolverNode.connect(this.wetGainNode);
-    this.wetGainNode.connect(this.masterGainNode);
+    
+    // Final mixing stage
+    this.dryGainNode.connect(this.masterCompressor);
+    this.wetGainNode.connect(this.masterCompressor);
+    this.masterCompressor.connect(this.masterGain);
+    this.masterGain.connect(this.context.destination);
 
     // Load reverb impulse response
     try {
@@ -56,12 +91,10 @@ class AudioManager {
 
     const cellKey = `${cellIndices.i}-${cellIndices.j}`;
     
-    // If this cell is already playing, don't play again
     if (this.playingCells.has(cellKey)) {
       return null;
     }
 
-    // Find a free voice or the oldest one
     let voiceId = this.findFreeVoice();
     
     try {
@@ -69,26 +102,32 @@ class AudioManager {
       const arrayBuffer = await response.arrayBuffer();
       const audioBuffer = await this.context.decodeAudioData(arrayBuffer);
 
-      // Setup new voice
+      // Voice-specific processing chain
       const source = this.context.createBufferSource();
       source.buffer = audioBuffer;
 
-      const gainNode = this.context.createGain();
-      gainNode.gain.setValueAtTime(0, this.context.currentTime);
-      gainNode.gain.linearRampToValueAtTime(0.5, this.context.currentTime + 0.1);
+      // Individual voice gain for envelope
+      const voiceGain = this.context.createGain();
+      voiceGain.gain.setValueAtTime(0, this.context.currentTime);
+      
+      // Create a gentle attack
+      voiceGain.gain.setTargetAtTime(
+        0.7, 
+        this.context.currentTime,
+        0.015
+      );
 
-      source.connect(gainNode);
-      gainNode.connect(this.dryGainNode);
-      gainNode.connect(this.convolverNode);
+      // Connect voice to processing chain
+      source.connect(voiceGain);
+      voiceGain.connect(this.inputBus);
 
       this.playingCells.add(cellKey);
 
-      // Store voice data
       const voice = {
         id: voiceId,
         url,
         source,
-        gainNode,
+        gainNode: voiceGain,
         startTime: this.context.currentTime,
         isReleasing: false,
         cellKey,
@@ -105,7 +144,7 @@ class AudioManager {
       source.onended = cleanupVoice;
       source.start();
 
-      // Set a safety timeout in case onended doesn't fire
+      // Safety cleanup
       setTimeout(cleanupVoice, (audioBuffer.duration * 1000) + 100);
 
       return { voiceId, cellIndices };
@@ -135,7 +174,13 @@ class AudioManager {
         console.error('Error stopping voice:', e);
       }
     } else {
-      voice.gainNode.gain.linearRampToValueAtTime(0, this.context.currentTime + 0.1);
+      // Gentle release envelope
+      voice.gainNode.gain.setTargetAtTime(
+        0,
+        this.context.currentTime,
+        0.015
+      );
+
       setTimeout(() => {
         try {
           if (voice.cellKey) {
