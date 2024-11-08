@@ -393,7 +393,7 @@ const handleMouseMove = useCallback((event) => {
       )}
       
       {/* Generation slider */}
-      <div className="absolute bottom-4 left-1/2 -translate-x-1/2 px-4 py-2 bg-gray-900/80 backdrop-blur rounded">
+      <div className="fixed bottom-4 left-1/2 -translate-x-1/2 px-4 py-2 bg-gray-900/80 backdrop-blur rounded z-50">
         <div className="flex items-center gap-4">
           <span className="text-white text-sm">Generation: {selectedGeneration * 500}</span>
           <input
