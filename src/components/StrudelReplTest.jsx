@@ -15,9 +15,11 @@ const StrudelReplTest = () => {
     fourBeat: 'sound("bd hh sd hh")'
   };
 
-  // Track current patterns
+  // Track current patterns and playing state
   const [currentPattern1, setCurrentPattern1] = useState(patterns.basic1);
   const [currentPattern2, setCurrentPattern2] = useState(patterns.basic2);
+  const [isPlaying1, setIsPlaying1] = useState(false);
+  const [isPlaying2, setIsPlaying2] = useState(false);
 
   useEffect(() => {
     // Initialize first REPL
@@ -53,32 +55,45 @@ const StrudelReplTest = () => {
     };
   }, []);
 
-  const handleStart = (repl, pattern) => {
+  const handleToggle = (repl, setIsPlaying) => {
     if (repl.current?.editor?.repl) {
-      repl.current.editor.repl.evaluate(pattern);
+      repl.current.editor.toggle();
+      setIsPlaying(prev => !prev);
     }
   };
 
-  const handleStop = (repl) => {
+  const handleStop = (repl, setIsPlaying) => {
     if (repl.current?.editor?.repl) {
       repl.current.editor.repl.stop();
+      setIsPlaying(false);
     }
   };
 
   const handleStartAll = () => {
-    handleStart(repl1Ref, currentPattern1);
-    handleStart(repl2Ref, currentPattern2);
+    if (!isPlaying1) handleToggle(repl1Ref, setIsPlaying1);
+    if (!isPlaying2) handleToggle(repl2Ref, setIsPlaying2);
   };
 
   const handleStopAll = () => {
-    handleStop(repl1Ref);
-    handleStop(repl2Ref);
+    if (isPlaying1) handleStop(repl1Ref, setIsPlaying1);
+    if (isPlaying2) handleStop(repl2Ref, setIsPlaying2);
   };
 
   const applyPattern = (repl, pattern, setPattern) => {
     if (repl.current?.editor) {
       repl.current.editor.setCode(pattern);
       setPattern(pattern);
+    }
+  };
+
+  const handleUpdate = async (repl, setPattern) => {
+    if (repl.current?.editor?.repl) {
+      // Get code directly from the REPL
+      console.log("repl.current.editor", repl.current.editor);
+      const currentCode = repl.current.editor.code;
+      console.log('Current code:', currentCode);
+      setPattern(currentCode);
+      repl.current.editor.repl.evaluate(currentCode);
     }
   };
 
@@ -150,16 +165,26 @@ const StrudelReplTest = () => {
         />
         <div className="space-x-2">
           <button
-            onClick={() => handleStart(repl1Ref, currentPattern1)}
-            className="px-4 py-2 bg-green-500 text-white rounded hover:bg-green-600"
+            onClick={() => handleToggle(repl1Ref, setIsPlaying1)}
+            className={`px-4 py-2 rounded ${
+              isPlaying1
+                ? 'bg-yellow-500 hover:bg-yellow-600 text-white'
+                : 'bg-green-500 hover:bg-green-600 text-white'
+            }`}
           >
-            Start REPL 1
+            {isPlaying1 ? 'Pause REPL 1' : 'Play REPL 1'}
           </button>
           <button
-            onClick={() => handleStop(repl1Ref)}
+            onClick={() => handleStop(repl1Ref, setIsPlaying1)}
             className="px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600"
           >
             Stop REPL 1
+          </button>
+          <button
+            onClick={() => handleUpdate(repl1Ref, setCurrentPattern1)}
+            className="px-4 py-2 bg-orange-500 text-white rounded hover:bg-orange-600"
+          >
+            Update & Run REPL 1
           </button>
         </div>
       </div>
@@ -179,16 +204,26 @@ const StrudelReplTest = () => {
         />
         <div className="space-x-2">
           <button
-            onClick={() => handleStart(repl2Ref, currentPattern2)}
-            className="px-4 py-2 bg-green-500 text-white rounded hover:bg-green-600"
+            onClick={() => handleToggle(repl2Ref, setIsPlaying2)}
+            className={`px-4 py-2 rounded ${
+              isPlaying2
+                ? 'bg-yellow-500 hover:bg-yellow-600 text-white'
+                : 'bg-green-500 hover:bg-green-600 text-white'
+            }`}
           >
-            Start REPL 2
+            {isPlaying2 ? 'Pause REPL 2' : 'Play REPL 2'}
           </button>
           <button
-            onClick={() => handleStop(repl2Ref)}
+            onClick={() => handleStop(repl2Ref, setIsPlaying2)}
             className="px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600"
           >
             Stop REPL 2
+          </button>
+          <button
+            onClick={() => handleUpdate(repl2Ref, setCurrentPattern2)}
+            className="px-4 py-2 bg-orange-500 text-white rounded hover:bg-orange-600"
+          >
+            Update & Run REPL 2
           </button>
         </div>
       </div>
