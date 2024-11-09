@@ -7,6 +7,7 @@ import UnitConfigPanel from './components/UnitConfigPanel';
 import ViewSwitcher from './components/ViewSwitcher';
 import HeatmapViewer from './components/HeatmapViewer';
 import StrudelReplTest from './components/StrudelReplTest';
+import { StrudelPatternProvider } from './components/strudelPatternContext';
 import { DEFAULT_STRUDEL_CODE, LINEAGE_SOUNDS_BUCKET_HOST } from './constants';
 
 function App() {
@@ -269,13 +270,15 @@ function App() {
   };
 
   return (
-    <Router>
-      <Routes>
-        <Route path="/strudel-repl-test" element={<StrudelReplTest />} />
-        <Route path="/" element={<MainContent />} />
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
-    </Router>
+    <StrudelPatternProvider>
+      <Router>
+        <Routes>
+          <Route path="/strudel-repl-test" element={<StrudelReplTest />} />
+          <Route path="/" element={<MainContent />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </Router>
+    </StrudelPatternProvider>
   );
 }
 
