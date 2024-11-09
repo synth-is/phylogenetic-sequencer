@@ -49,6 +49,7 @@ const HeatmapViewer = ({
   const currentCellRef = useRef(null);
   const currentlyPlayingCellRef = useRef(null);
   const hasInteractedRef = useRef(false);
+  const currentMatrixRef = useRef(null);
 
   // Initialize AudioManager
   useEffect(() => {
@@ -109,12 +110,20 @@ const HeatmapViewer = ({
     return colors[index];
   }, [selectedColormap, theme]);
 
+  // Add this effect to update the matrix ref when generation changes
+  useEffect(() => {
+    if (matrixData && selectedGeneration >= 0) {
+      currentMatrixRef.current = matrixData.scoreAndGenomeMatrices[selectedGeneration];
+    }
+  }, [matrixData, selectedGeneration]);
+
+  // Update drawHeatmap to use the stored matrix
   const drawHeatmap = useCallback(() => {
-    if (!matrixData || !canvasRef.current) return;
+    if (!currentMatrixRef.current || !canvasRef.current) return;
 
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
-    const matrix = matrixData.scoreAndGenomeMatrices[selectedGeneration];
+    const matrix = currentMatrixRef.current;  // Use stored matrix instead of accessing via selectedGeneration
     
     const width = canvas.width;
     const height = canvas.height;
@@ -144,9 +153,10 @@ const HeatmapViewer = ({
         const x = j * cellWidth;
         const y = i * cellHeight;
         
-        // Use ref for currently playing cell
         const playingCell = currentlyPlayingCellRef.current;
-        if (playingCell?.i === i && playingCell?.j === j) {
+        if (playingCell?.i === i && 
+            playingCell?.j === j && 
+            playingCell?.generation === selectedGeneration) {
           ctx.fillStyle = '#ff0000';
         } else {
           ctx.fillStyle = getColorForValue(cell.score);
@@ -159,7 +169,7 @@ const HeatmapViewer = ({
     });
     
     ctx.restore();
-  }, [matrixData, selectedGeneration, getColorForValue, theme, useSquareCells]);
+  }, [getColorForValue, theme, useSquareCells, selectedGeneration]); 
 
   // Handle window resize
   useEffect(() => {
@@ -264,28 +274,38 @@ const HeatmapViewer = ({
       const result = await audioManagerRef.current.playSound(audioUrl, indices);
       
       if (result) {
-        currentlyPlayingCellRef.current = indices;
-        requestAnimationFrame(drawHeatmap);
+        currentlyPlayingCellRef.current = {
+          ...indices,
+          generation: selectedGeneration // Store the generation with the playing cell
+        };
+        requestAnimationFrame(() => {
+          if (currentlyPlayingCellRef.current?.generation === selectedGeneration) {
+            drawHeatmap();
+          }
+        });
         
         const voice = audioManagerRef.current.voices.get(result.voiceId);
         if (voice?.source) {
           const originalOnEnded = voice.source.onended;
           voice.source.onended = () => {
             if (originalOnEnded) originalOnEnded();
-            currentlyPlayingCellRef.current = null;
-            requestAnimationFrame(drawHeatmap);
+            if (currentlyPlayingCellRef.current?.generation === selectedGeneration) {
+              currentlyPlayingCellRef.current = null;
+              requestAnimationFrame(drawHeatmap);
+            }
           };
         }
       }
     } catch (error) {
       console.error('Error playing sound:', error);
     }
-  }, [matrixData]);
+  }, [matrixData, selectedGeneration]);
 
   // Add debounce/throttle for mouse movement
+// Only change the handleMouseMove callback to match the matrix being displayed:
   const handleMouseMove = useCallback((event) => {
     if (!matrixData || !canvasRef.current) return;
-  
+
     const rect = canvasRef.current.getBoundingClientRect();
     const canvasX = event.clientX - rect.left;
     const canvasY = event.clientY - rect.top;
@@ -294,12 +314,14 @@ const HeatmapViewer = ({
     
     if (indices) {
       const { i, j } = indices;
-      const cell = matrixData.scoreAndGenomeMatrices[selectedGeneration][i][j];
+      // Get the matrix that was used for drawing
+      const matrix = matrixData.scoreAndGenomeMatrices[selectedGeneration];
+      const cell = matrix[i][j];
       
       if (cell.score !== null) {
         setTooltip({
           show: true,
-          content: `Score: ${cell.score.toFixed(3)}`,
+          content: `Score: ${cell.score.toFixed(3)} (Gen ${selectedGeneration * 500})`,
           x: event.clientX,
           y: event.clientY
         });
@@ -311,7 +333,6 @@ const HeatmapViewer = ({
         if (cellKey !== currentKey) {
           currentCellRef.current = { i, j };
           
-          // Only play sound if not in silent mode and cell isn't already playing
           if (!silentMode && hasInteractedRef.current && !audioManagerRef.current.isCellPlaying(i, j)) {
             playSound(cell, { i, j });
           }
@@ -324,7 +345,7 @@ const HeatmapViewer = ({
       setTooltip({ show: false, content: '', x: 0, y: 0 });
       currentCellRef.current = null;
     }
-  }, [matrixData, selectedGeneration, silentMode]);
+  }, [matrixData, selectedGeneration, silentMode, getMatrixIndices, playSound]);
 
   const handleClick = async () => {
     if (!hasInteracted) {
