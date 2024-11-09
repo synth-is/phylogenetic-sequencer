@@ -7,12 +7,24 @@ const StrudelReplTest = () => {
   const containerRef1 = useRef(null);
   const containerRef2 = useRef(null);
 
+  const logger = (haps, t) => {
+    haps.forEach(hap => {
+      console.log('Hap:', hap.value, "time:", t);
+    });
+  };
+
+  useEffect(() => {
+    if (window) {
+      window.kromosynthblink = logger;
+    }
+  }, []);
+
   // Define all available patterns
   const patterns = {
-    basic1: 'sound("bd hh")',
-    basic2: 'sound("sd oh")',
-    tr909: 'sound("bd hh sd oh").bank("RolandTR909")',
-    fourBeat: 'sound("bd hh sd hh")'
+    basic1: 'sound("bd hh").draw((haps, t) => { kromosynthblink(haps, t) },{})',
+    basic2: 'sound("sd oh").draw((haps, t) => { kromosynthblink(haps, t) },{})',
+    tr909: 'sound("bd hh sd oh").bank("RolandTR909").draw((haps, t) => { kromosynthblink(haps, t) },{})',
+    fourBeat: 'sound("bd hh sd hh").draw((haps, t) => { kromosynthblink(haps, t) },{})'
   };
 
   // Track current patterns and playing state
@@ -93,6 +105,7 @@ const StrudelReplTest = () => {
       const currentCode = repl.current.editor.code;
       console.log('Current code:', currentCode);
       setPattern(currentCode);
+      // repl.current.editor.repl._evaluate.logger = logger;
       repl.current.editor.repl.evaluate(currentCode);
     }
   };
