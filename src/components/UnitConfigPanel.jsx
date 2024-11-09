@@ -1,9 +1,10 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { X } from 'lucide-react';
+import { X, Code, Play, Square, RefreshCw, Bug } from 'lucide-react';
 import StrudelEditor from './StrudelEditor';
 import ChuckEditor from './ChuckEditor';
 import { DEFAULT_STRUDEL_CODE } from '../constants';
 import '@strudel/repl';
+import { useStrudelPattern } from './useStrudelPattern';
 
 const CollapsibleSection = ({ title, children }) => {
   const [isOpen, setIsOpen] = useState(true);
@@ -51,6 +52,16 @@ const Slider = ({ label, value, onChange, min = 0, max = 1, step = 0.01, centere
 };
 
 const UnitConfigPanel = ({ unit, units, onClose, onUpdateUnit }) => {
+  const [showDebugger, setShowDebugger] = useState(false);
+  const {
+    debugLog,
+    applyPatternFromEditor,
+    testPatternUpdate,
+    clearDebugLog,
+    startAll,
+    stopAll
+  } = useStrudelPattern(unit.id);
+
   const tabs = ['Unit', 'Sampler', 'Live Code'];
   const [activeTab, setActiveTab] = useState('Unit');
   const [liveCodeEngine, setLiveCodeEngine] = useState(unit.liveCodeEngine || 'Strudel');
@@ -107,6 +118,16 @@ const UnitConfigPanel = ({ unit, units, onClose, onUpdateUnit }) => {
   const handleEngineChange = (engine) => {
     setLiveCodeEngine(engine);
     onUpdateUnit(unit.id, { ...unit, liveCodeEngine: engine });
+  };
+
+  const handleApplyPattern = () => {
+    const newPattern = applyPatternFromEditor();
+    if (newPattern) {
+      onUpdateUnit(unit.id, {
+        ...unit,
+        strudelCode: newPattern
+      });
+    }
   };
 
   return (
@@ -259,22 +280,99 @@ const UnitConfigPanel = ({ unit, units, onClose, onUpdateUnit }) => {
                 ChucK
               </button>
             </div>
-            <div className="relative flex-1" style={{ minHeight: '300px' }}>
-              {liveCodeEngine === 'Strudel' && (
-                <StrudelEditor
-                  key={unit.id} // Force remount only when unit changes
-                  unitId={unit.id}
-                  // initialCode={unit.strudelCode || DEFAULT_STRUDEL_CODE}
-                  onCodeChange={(newCode) => {
-                    console.log(`Code change in unit ${unit.id}:`, newCode);
-                    handleValueChange('strudelCode', newCode);
-                  }}
-                  onEditorReady={handleEditorReady}
-                />
-              )}
-              {liveCodeEngine === 'ChucK' && <ChuckEditor />}
-            </div>
+          {/* New Control Panel */}
+          <div className="flex items-center gap-2 p-2 bg-gray-800/50 rounded">
+            <button
+              onClick={handleApplyPattern}
+              className="px-3 py-1.5 bg-blue-600 text-white rounded-sm flex items-center gap-1 text-xs"
+            >
+              <RefreshCw size={12} />
+              Apply Changes
+            </button>
+            
+            <button
+              onClick={() => testPatternUpdate()}
+              className="px-3 py-1.5 bg-purple-600 text-white rounded-sm flex items-center gap-1 text-xs"
+            >
+              <Code size={12} />
+              Test Update
+            </button>
+
+            <button
+              onClick={() => setShowDebugger(!showDebugger)}
+              className="px-3 py-1.5 bg-amber-600 text-white rounded-sm flex items-center gap-1 text-xs"
+            >
+              <Bug size={12} />
+              {showDebugger ? 'Hide Debug' : 'Show Debug'}
+            </button>
+
+            <div className="flex-1" />
+
+            <button
+              onClick={startAll}
+              className="p-1.5 bg-green-600 text-white rounded-sm"
+            >
+              <Play size={14} />
+            </button>
+            
+            <button
+              onClick={stopAll}
+              className="p-1.5 bg-red-600 text-white rounded-sm"
+            >
+              <Square size={14} />
+            </button>
           </div>
+
+          {/* Debug Panel */}
+          {showDebugger && (
+            <div className="p-2 bg-gray-800/50 rounded space-y-2">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm text-white font-medium">Pattern Debug Log</h3>
+                <button
+                  onClick={clearDebugLog}
+                  className="text-xs text-gray-400 hover:text-white"
+                >
+                  Clear Log
+                </button>
+              </div>
+              <div className="space-y-1 max-h-40 overflow-y-auto text-xs">
+                {debugLog.map((entry, i) => (
+                  <div
+                    key={i}
+                    className={`p-1 rounded ${
+                      entry.unitId === unit.id 
+                        ? 'bg-blue-900/30 text-blue-200' 
+                        : 'bg-gray-800/50 text-gray-400'
+                    }`}
+                  >
+                    <span className="text-gray-500">{entry.timestamp.split('T')[1].split('.')[0]}</span>
+                    {' - '}
+                    <span className="text-gray-400">Unit {entry.unitId}:</span>
+                    {' '}
+                    {entry.message}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Editor */}
+          <div className="relative flex-1" style={{ minHeight: '300px' }}>
+            {liveCodeEngine === 'Strudel' && (
+              <StrudelEditor
+                key={unit.id}
+                unitId={unit.id}
+                initialCode={unit.strudelCode}
+                onCodeChange={newCode => {
+                  console.log(`Code change in unit ${unit.id}:`, newCode);
+                }}
+                onEditorReady={handleEditorReady}
+              />
+            )}
+            {liveCodeEngine === 'ChucK' && <ChuckEditor />}
+          </div>
+        </div>
+
         )}
       </div>
     </div>
