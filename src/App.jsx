@@ -1,10 +1,12 @@
 import { useState, useEffect } from 'react';
 import { Settings, Play } from 'lucide-react';
+import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import PhylogeneticViewer from './components/PhylogeneticViewer';
 import UnitsPanel from './components/UnitsPanel';
 import UnitConfigPanel from './components/UnitConfigPanel';
 import ViewSwitcher from './components/ViewSwitcher';
 import HeatmapViewer from './components/HeatmapViewer';
+import StrudelReplTest from './components/StrudelReplTest';
 import { DEFAULT_STRUDEL_CODE, LINEAGE_SOUNDS_BUCKET_HOST } from './constants';
 
 function App() {
@@ -191,66 +193,87 @@ function App() {
     </div>
   );
 
-  return (
-    <div className="fixed inset-0 flex flex-col bg-gray-950">
-      {/* Shared Top Bar - Always visible */}
-      <TopBar />
+  const MainContent = () => {
+    if (!lineageTreesIndex || !treeData) {
+      return <div className="fixed inset-0 bg-gray-950 flex items-center justify-center text-white">
+        Loading...
+      </div>;
+    }
 
-      {/* Main Content Area */}
-      <div className="flex-1 flex">
-        {/* Units Panel - Visible based on showUnits state */}
-        {showUnits && (
-          <>
-            <UnitsPanel
-              units={units}
-              selectedUnitId={selectedUnitId}
-              onSelectUnit={handleSelectUnit}
-              onAddUnit={handleAddUnit}
-              onRemoveUnit={handleRemoveUnit}
-              onToggleState={handleToggleState}
-              onUpdateVolume={handleUpdateVolume}
+    const runs = Object.keys(lineageTreesIndex);
+    const steps = lineageTreesIndex[selectedRun].all.length;
+
+    return (
+      <div className="fixed inset-0 flex flex-col bg-gray-950">
+        {/* Shared Top Bar - Always visible */}
+        <TopBar />
+
+        {/* Main Content Area */}
+        <div className="flex-1 flex">
+          {/* Units Panel - Visible based on showUnits state */}
+          {showUnits && (
+            <>
+              <UnitsPanel
+                units={units}
+                selectedUnitId={selectedUnitId}
+                onSelectUnit={handleSelectUnit}
+                onAddUnit={handleAddUnit}
+                onRemoveUnit={handleRemoveUnit}
+                onToggleState={handleToggleState}
+                onUpdateVolume={handleUpdateVolume}
+              />
+              
+              {selectedUnitId && (
+                <UnitConfigPanel
+                  unit={units.find(u => u.id === selectedUnitId)}
+                  units={units}
+                  onClose={() => setSelectedUnitId(null)}
+                  onUpdateUnit={handleUpdateUnit}
+                />
+              )}
+            </>
+          )}
+
+          {/* Main Content Container */}
+          <div className="flex-1 relative">
+            {/* View Switcher - Always visible */}
+            <ViewSwitcher 
+              activeView={currentView}
+              onViewChange={setCurrentView}
             />
             
-            {selectedUnitId && (
-              <UnitConfigPanel
-                unit={units.find(u => u.id === selectedUnitId)}
-                units={units}
-                onClose={() => setSelectedUnitId(null)}
-                onUpdateUnit={handleUpdateUnit}
-              />
-            )}
-          </>
-        )}
-
-        {/* Main Content Container */}
-        <div className="flex-1 relative">
-          {/* View Switcher - Always visible */}
-          <ViewSwitcher 
-            activeView={currentView}
-            onViewChange={setCurrentView}
-          />
-          
-          {/* Views Container - Full height and width */}
-          <div className="absolute inset-0">
-            {currentView === 'tree' ? (
-              <PhylogeneticViewer 
-                treeData={treeData}
-                experiment={selectedRun}
-                evoRunId={getEvoRunIdFromSelectedStep(lineageTreesIndex[selectedRun].all[selectedIndex])}
-                showSettings={showSettings}
-                setShowSettings={setShowSettings}
-              />
-            ) : (
-              <HeatmapViewer 
-                showSettings={showSettings}
-                setShowSettings={setShowSettings}
-                matrixUrl={"https://ns9648k.web.sigma2.no/lineage-matrices/matrix_01JA6KRDQ1JR9A8BKRXCBGBYYB_evoConf_singleMap_refSingleEmb_spectralSpreadAndFlux__2024-10.json"}
-              />
-            )}
+            {/* Views Container - Full height and width */}
+            <div className="absolute inset-0">
+              {currentView === 'tree' ? (
+                <PhylogeneticViewer 
+                  treeData={treeData}
+                  experiment={selectedRun}
+                  evoRunId={getEvoRunIdFromSelectedStep(lineageTreesIndex[selectedRun].all[selectedIndex])}
+                  showSettings={showSettings}
+                  setShowSettings={setShowSettings}
+                />
+              ) : (
+                <HeatmapViewer 
+                  showSettings={showSettings}
+                  setShowSettings={setShowSettings}
+                  matrixUrl={"https://ns9648k.web.sigma2.no/lineage-matrices/matrix_01JA6KRDQ1JR9A8BKRXCBGBYYB_evoConf_singleMap_refSingleEmb_spectralSpreadAndFlux__2024-10.json"}
+                />
+              )}
+            </div>
           </div>
         </div>
       </div>
-    </div>
+    );
+  };
+
+  return (
+    <Router>
+      <Routes>
+        <Route path="/strudel-repl-test" element={<StrudelReplTest />} />
+        <Route path="/" element={<MainContent />} />
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </Router>
   );
 }
 
