@@ -256,7 +256,9 @@ function App() {
                 <HeatmapViewer 
                   showSettings={showSettings}
                   setShowSettings={setShowSettings}
-                  matrixUrl={"https://ns9648k.web.sigma2.no/lineage-matrices/matrix_01JA6KRDQ1JR9A8BKRXCBGBYYB_evoConf_singleMap_refSingleEmb_spectralSpreadAndFlux__2024-10.json"}
+                  experiment={selectedRun}
+                  evoRunId={getEvoRunIdFromSelectedStep(lineageTreesIndex[selectedRun].all[selectedIndex])}
+                  matrixUrl={getMatrixUrlFromTreePath(lineageTreesIndex[selectedRun].all[selectedIndex])}
                 />
               )}
             </div>
@@ -293,6 +295,14 @@ function getEvoRunIdFromSelectedStep(treeJSONfilePath) {
   const evoRunId = selectedStep.substring(selectedStep.indexOf("tree_")+5, suffixIndex);
   console.log("Evo run ID:", evoRunId);
   return evoRunId;
+}
+
+function getMatrixUrlFromTreePath(treePath) {
+  const treePathParts = treePath.split('/');
+  const treeFileName = treePathParts[treePathParts.length - 1];
+  const matrixFileName = treeFileName.replace("tree_", "matrix_").replace("_all.json", ".json");
+  console.log("Matrix file name:", matrixFileName);
+  return `${LINEAGE_SOUNDS_BUCKET_HOST}/lineage-matrices/${matrixFileName}`;
 }
 
 export default App;

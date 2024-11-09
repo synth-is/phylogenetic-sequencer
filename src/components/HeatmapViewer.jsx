@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Settings } from 'lucide-react';
 import * as d3 from 'd3';
+import { LINEAGE_SOUNDS_BUCKET_HOST } from '../constants';
 import AudioManager from './AudioManager';
 
 const COLORMAP_OPTIONS = {
@@ -22,6 +23,7 @@ const HeatmapViewer = ({
   showSettings, 
   setShowSettings,
   experiment,
+  evoRunId,
   matrixUrl
 }) => {
   // Original state
@@ -269,7 +271,7 @@ const HeatmapViewer = ({
   
     try {
       const config = matrixData.evolutionRunConfig;
-      const audioUrl = `https://ns9648k.web.sigma2.no/evoConf_singleMap_refSingleEmb_spectralSpreadAndFlux/01JA6KRDQ1JR9A8BKRXCBGBYYB_evoConf_singleMap_refSingleEmb_spectralSpreadAndFlux__2024-10/${cell.genomeId}-${config.classScoringDurations[0]}_${config.classScoringNoteDeltas[0]}_${config.classScoringVelocities[0]}.wav`;
+      const audioUrl = `${LINEAGE_SOUNDS_BUCKET_HOST}/${experiment}/${evoRunId}/${cell.genomeId}-${config.classScoringDurations[0]}_${config.classScoringNoteDeltas[0]}_${config.classScoringVelocities[0]}.wav`;
   
       const result = await audioManagerRef.current.playSound(audioUrl, indices);
       
