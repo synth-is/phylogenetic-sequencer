@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Settings, Play } from 'lucide-react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import PhylogeneticViewer from './components/PhylogeneticViewer';
@@ -9,6 +9,7 @@ import HeatmapViewer from './components/HeatmapViewer';
 import StrudelReplTest from './components/StrudelReplTest';
 import { StrudelPatternProvider } from './components/strudelPatternContext';
 import { DEFAULT_STRUDEL_CODE, LINEAGE_SOUNDS_BUCKET_HOST } from './constants';
+
 
 function App() {
   // Existing state
@@ -21,15 +22,23 @@ function App() {
   const [selectedUnitId, setSelectedUnitId] = useState(null);
   const [currentView, setCurrentView] = useState('tree');
 
+  const [hasAudioInteraction, setHasAudioInteraction] = useState(false);
+
   // Enhanced units state with default parameter values
   const [units, setUnits] = useState([]);
 
+  const fetchedTreesRef = useRef(new Set());
+  const fetchedIndexRef = useRef(false);
+
   // Load lineage trees index
   useEffect(() => {
+    if (fetchedIndexRef.current) return;
+    
     fetch(`${LINEAGE_SOUNDS_BUCKET_HOST}/lineage-trees-metadata/lineage-trees.json`)
       .then(response => response.json())
       .then(index => {
         setLineageTreesIndex(index);
+        fetchedIndexRef.current = true;
       })
       .catch(error => console.error('Error loading index:', error));
   }, []);
@@ -39,10 +48,13 @@ function App() {
     if (!lineageTreesIndex) return;
 
     const treePath = lineageTreesIndex[selectedRun].all[selectedIndex];
+    if (fetchedTreesRef.current.has(treePath)) return;
+
     fetch(`${LINEAGE_SOUNDS_BUCKET_HOST}/lineage-trees/${treePath}`)
       .then(response => response.json())
       .then(treeJson => {
         setTreeData(treeJson);
+        fetchedTreesRef.current.add(treePath);
       })
       .catch(error => console.error('Error loading tree:', error));
   }, [lineageTreesIndex, selectedRun, selectedIndex]);
@@ -201,17 +213,10 @@ function App() {
       </div>;
     }
 
-    const runs = Object.keys(lineageTreesIndex);
-    const steps = lineageTreesIndex[selectedRun].all.length;
-
     return (
       <div className="fixed inset-0 flex flex-col bg-gray-950">
-        {/* Shared Top Bar - Always visible */}
         <TopBar />
-
-        {/* Main Content Area */}
         <div className="flex-1 flex">
-          {/* Units Panel - Visible based on showUnits state */}
           {showUnits && (
             <>
               <UnitsPanel
@@ -235,15 +240,12 @@ function App() {
             </>
           )}
 
-          {/* Main Content Container */}
           <div className="flex-1 relative">
-            {/* View Switcher - Always visible */}
             <ViewSwitcher 
               activeView={currentView}
               onViewChange={setCurrentView}
             />
             
-            {/* Views Container - Full height and width */}
             <div className="absolute inset-0">
               {currentView === 'tree' ? (
                 <PhylogeneticViewer 
@@ -252,6 +254,8 @@ function App() {
                   evoRunId={getEvoRunIdFromSelectedStep(lineageTreesIndex[selectedRun].all[selectedIndex])}
                   showSettings={showSettings}
                   setShowSettings={setShowSettings}
+                  hasAudioInteraction={hasAudioInteraction}
+                  onAudioInteraction={() => setHasAudioInteraction(true)}
                 />
               ) : (
                 <HeatmapViewer 
@@ -260,6 +264,8 @@ function App() {
                   experiment={selectedRun}
                   evoRunId={getEvoRunIdFromSelectedStep(lineageTreesIndex[selectedRun].all[selectedIndex])}
                   matrixUrl={getMatrixUrlFromTreePath(lineageTreesIndex[selectedRun].all[selectedIndex])}
+                  hasAudioInteraction={hasAudioInteraction}
+                  onAudioInteraction={() => setHasAudioInteraction(true)}
                 />
               )}
             </div>

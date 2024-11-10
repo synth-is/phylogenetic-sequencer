@@ -19,12 +19,14 @@ const COLORMAP_OPTIONS = {
   ]
 };
 
-const HeatmapViewer = ({ 
-  showSettings, 
+const HeatmapViewer = ({
+  showSettings,
   setShowSettings,
   experiment,
   evoRunId,
-  matrixUrl
+  matrixUrl,
+  hasAudioInteraction,
+  onAudioInteraction
 }) => {
   // Original state
   const [matrixData, setMatrixData] = useState(null);
@@ -33,7 +35,6 @@ const HeatmapViewer = ({
   const [tooltip, setTooltip] = useState({ show: false, content: '', x: 0, y: 0 });
   const [maxVoices, setMaxVoices] = useState(4);
   const [silentMode, setSilentMode] = useState(false);
-  const [hasInteracted, setHasInteracted] = useState(false);
   
   // UI state
   const [useSquareCells, setUseSquareCells] = useState(true);
@@ -46,21 +47,36 @@ const HeatmapViewer = ({
   const canvasRef = useRef(null);
   const transformRef = useRef(d3.zoomIdentity);
   const audioManagerRef = useRef(null);
+  const audioContextRef = useRef(null);
   const mouseMoveThrottleRef = useRef(null);
-
   const currentCellRef = useRef(null);
   const currentlyPlayingCellRef = useRef(null);
   const hasInteractedRef = useRef(false);
   const currentMatrixRef = useRef(null);
+  const lastMatrixUrlRef = useRef(null);
+  const mountedRef = useRef(false);
+
+
+  // Initialize Audio Context
+  useEffect(() => {
+    if (!audioContextRef.current) {
+      audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    
+    // Set hasInteracted when audio interaction is enabled
+    if (hasAudioInteraction) {
+      hasInteractedRef.current = true;
+    }
+  }, [hasAudioInteraction]);
 
   // Initialize AudioManager
   useEffect(() => {
-    if (!audioManagerRef.current) {
-      audioManagerRef.current = new AudioManager();
+    if (!audioManagerRef.current && audioContextRef.current) {
+      audioManagerRef.current = new AudioManager(audioContextRef.current);
       audioManagerRef.current.initialize();
       audioManagerRef.current.maxVoices = maxVoices;
     }
-  }, []);
+  }, [maxVoices]);
 
   // Update AudioManager maxVoices when setting changes
   useEffect(() => {
@@ -85,17 +101,32 @@ const HeatmapViewer = ({
     };
   }, []);
 
-
-
-  // Fetch matrix data
+  // Add sync effect for audio interaction state
   useEffect(() => {
-    if (!matrixUrl) return;
+    if (hasAudioInteraction && audioContextRef.current?.state === 'suspended') {
+      audioContextRef.current.resume().catch(console.error);
+    }
+  }, [hasAudioInteraction]);
 
+
+
+  // Fetch matrix data only when URL changes
+  useEffect(() => {
+    if (!matrixUrl || matrixUrl === lastMatrixUrlRef.current || mountedRef.current) return;
+    
+    console.log('Fetching matrix data for URL:', matrixUrl);
+    lastMatrixUrlRef.current = matrixUrl;
+    mountedRef.current = true;
+    
     fetch(matrixUrl)
       .then(response => response.json())
-      .then(data => setMatrixData(data))
+      .then(data => {
+        setMatrixData(data);
+        setSelectedGeneration(data.scoreAndGenomeMatrices.length - 1);
+      })
       .catch(error => console.error('Error loading matrix data:', error));
   }, [matrixUrl]);
+
 
   // Initialize to last generation
   useEffect(() => {
@@ -112,7 +143,7 @@ const HeatmapViewer = ({
     return colors[index];
   }, [selectedColormap, theme]);
 
-  // Add this effect to update the matrix ref when generation changes
+  // Update matrix ref when generation changes
   useEffect(() => {
     if (matrixData && selectedGeneration >= 0) {
       currentMatrixRef.current = matrixData.scoreAndGenomeMatrices[selectedGeneration];
@@ -204,13 +235,15 @@ const HeatmapViewer = ({
       });
   
     const canvas = d3.select(canvasRef.current);
-    canvas.call(zoomBehaviorRef.current);
-  
-    // Set initial transform
-    const initialTransform = d3.zoomIdentity
-      .translate(0, 0)
-      .scale(1);
-    canvas.call(zoomBehaviorRef.current.transform, initialTransform);
+    
+    // Enable zoom behavior
+    canvas.call(zoomBehaviorRef.current)
+      .call(
+        zoomBehaviorRef.current.transform,
+        d3.zoomIdentity
+          .translate(0, 0)
+          .scale(1)
+      );
   
     return () => {
       if (zoomBehaviorRef.current) {
@@ -218,7 +251,8 @@ const HeatmapViewer = ({
         zoomBehaviorRef.current = null;
       }
     };
-  }, [matrixData]); 
+  }, [matrixData]);
+
 
 
   useEffect(() => {
@@ -267,30 +301,26 @@ const HeatmapViewer = ({
   }, [matrixData, selectedGeneration, useSquareCells]);  
 
   const playSound = useCallback(async (cell, indices) => {
-    if (!hasInteractedRef.current || !audioManagerRef.current) return;
+    if (!hasAudioInteraction || !audioManagerRef.current || !matrixData) return;
   
     try {
+      console.log('Attempting to play sound for cell:', cell);
       const config = matrixData.evolutionRunConfig;
       const audioUrl = `${LINEAGE_SOUNDS_BUCKET_HOST}/${experiment}/${evoRunId}/${cell.genomeId}-${config.classScoringDurations[0]}_${config.classScoringNoteDeltas[0]}_${config.classScoringVelocities[0]}.wav`;
-  
+      
+      console.log('Audio URL:', audioUrl);
       const result = await audioManagerRef.current.playSound(audioUrl, indices);
       
       if (result) {
         currentlyPlayingCellRef.current = {
           ...indices,
-          generation: selectedGeneration // Store the generation with the playing cell
+          generation: selectedGeneration
         };
-        requestAnimationFrame(() => {
-          if (currentlyPlayingCellRef.current?.generation === selectedGeneration) {
-            drawHeatmap();
-          }
-        });
+        requestAnimationFrame(drawHeatmap);
         
         const voice = audioManagerRef.current.voices.get(result.voiceId);
         if (voice?.source) {
-          const originalOnEnded = voice.source.onended;
           voice.source.onended = () => {
-            if (originalOnEnded) originalOnEnded();
             if (currentlyPlayingCellRef.current?.generation === selectedGeneration) {
               currentlyPlayingCellRef.current = null;
               requestAnimationFrame(drawHeatmap);
@@ -301,12 +331,12 @@ const HeatmapViewer = ({
     } catch (error) {
       console.error('Error playing sound:', error);
     }
-  }, [matrixData, selectedGeneration]);
+  }, [matrixData, experiment, evoRunId, selectedGeneration, hasAudioInteraction]);
 
   // Add debounce/throttle for mouse movement
 // Only change the handleMouseMove callback to match the matrix being displayed:
   const handleMouseMove = useCallback((event) => {
-    if (!matrixData || !canvasRef.current) return;
+    if (!matrixData || !canvasRef.current || !hasAudioInteraction) return;
 
     const rect = canvasRef.current.getBoundingClientRect();
     const canvasX = event.clientX - rect.left;
@@ -316,7 +346,6 @@ const HeatmapViewer = ({
     
     if (indices) {
       const { i, j } = indices;
-      // Get the matrix that was used for drawing
       const matrix = matrixData.scoreAndGenomeMatrices[selectedGeneration];
       const cell = matrix[i][j];
       
@@ -335,7 +364,8 @@ const HeatmapViewer = ({
         if (cellKey !== currentKey) {
           currentCellRef.current = { i, j };
           
-          if (!silentMode && hasInteractedRef.current && !audioManagerRef.current.isCellPlaying(i, j)) {
+          if (!silentMode && !audioManagerRef.current?.isCellPlaying(i, j)) {
+            console.log('Playing sound for cell:', cell);
             playSound(cell, { i, j });
           }
         }
@@ -347,16 +377,24 @@ const HeatmapViewer = ({
       setTooltip({ show: false, content: '', x: 0, y: 0 });
       currentCellRef.current = null;
     }
-  }, [matrixData, selectedGeneration, silentMode, getMatrixIndices, playSound]);
+  }, [matrixData, selectedGeneration, silentMode, getMatrixIndices, playSound, hasAudioInteraction]);
 
-  const handleClick = async () => {
-    if (!hasInteracted) {
+  useEffect(() => {
+    if (hasAudioInteraction && audioContextRef.current?.state === 'suspended') {
+      audioContextRef.current.resume().catch(console.error);
+    }
+  }, [hasAudioInteraction]);
+  
+  // Update click handler
+  const handleClick = async (e) => {
+    e.stopPropagation();
+    if (!hasAudioInteraction && audioContextRef.current) {
       try {
-        await audioManagerRef.current?.resume();
-        setHasInteracted(true);
+        await audioContextRef.current.resume();
+        onAudioInteraction();
         hasInteractedRef.current = true;
-      } catch (err) {
-        console.error('Error resuming audio context:', err);
+      } catch (error) {
+        console.error('Error initializing audio:', error);
       }
     }
   };
@@ -477,9 +515,11 @@ const HeatmapViewer = ({
 
 
   return (
-    <div className={`relative flex-1 ${theme === 'light' ? 'bg-gray-100' : 'bg-gray-950'}`} 
-         onClick={handleClick} 
-         ref={containerRef}>
+    <div 
+      className={`relative flex-1 ${theme === 'light' ? 'bg-gray-100' : 'bg-gray-950'}`} 
+      onClick={handleClick} 
+      ref={containerRef}
+    >
       <canvas
         ref={canvasRef}
         width={800}
@@ -492,7 +532,8 @@ const HeatmapViewer = ({
           if (audioManagerRef.current) {
             audioManagerRef.current.cleanup();
             setActiveCells(new Map());
-            setCurrentlyPlayingCell(null);
+            currentlyPlayingCellRef.current = null;  // Use the ref directly instead of setCurrentlyPlayingCell
+            drawHeatmap();  // Redraw to clear the highlighted cell
           }
         }}
       />
@@ -530,7 +571,7 @@ const HeatmapViewer = ({
       {/* Enhanced Settings panel */}
       {showSettings && renderSettings()}
       
-      {!hasInteracted && (
+      {!hasAudioInteraction && (
         <div className="absolute inset-0 flex items-center justify-center bg-black/50 backdrop-blur-sm">
           <div className="bg-gray-800/90 px-4 py-3 rounded text-white text-sm">
             Click anywhere to enable audio playback

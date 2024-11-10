@@ -5,9 +5,16 @@ import { pruneTreeForContextSwitches } from './phylogenetic-tree-common';
 import { LINEAGE_SOUNDS_BUCKET_HOST } from '../constants';
 
 
-const PhylogeneticViewer = ({ treeData, experiment, evoRunId, showSettings, setShowSettings }) => {
+const PhylogeneticViewer = ({ 
+  treeData, 
+  experiment, 
+  evoRunId, 
+  showSettings, 
+  setShowSettings,
+  hasAudioInteraction,
+  onAudioInteraction 
+}) => {
   // State declarations
-  const [hasInteracted, setHasInteracted] = useState(false);
   const [theme, setTheme] = useState('dark');
   const [measureContextSwitches, setMeasureContextSwitches] = useState(false);
   const [reverbAmount, setReverbAmount] = useState(5);
@@ -30,6 +37,7 @@ const PhylogeneticViewer = ({ treeData, experiment, evoRunId, showSettings, setS
   const currentSourceRef = useRef(null);
   const currentGainNodeRef = useRef(null);
   const currentPlayingNodeRef = useRef(null);
+  const mountedRef = useRef(false);
 
   // Constants
   const FADE_TIME = 0.1;
@@ -38,30 +46,30 @@ const PhylogeneticViewer = ({ treeData, experiment, evoRunId, showSettings, setS
 
   // Initialize Audio Context and nodes
   useEffect(() => {
-    if (!audioContextRef.current) {
-      audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
-      zoomGainNodeRef.current = audioContextRef.current.createGain();
-      convolverNodeRef.current = audioContextRef.current.createConvolver();
-      dryGainNodeRef.current = audioContextRef.current.createGain();
-      wetGainNodeRef.current = audioContextRef.current.createGain();
-      
-      // Connect nodes
-      zoomGainNodeRef.current.connect(dryGainNodeRef.current);
-      zoomGainNodeRef.current.connect(convolverNodeRef.current);
-      convolverNodeRef.current.connect(wetGainNodeRef.current);
-      dryGainNodeRef.current.connect(audioContextRef.current.destination);
-      wetGainNodeRef.current.connect(audioContextRef.current.destination);
+    if (audioContextRef.current || mountedRef.current) return;
+    
+    audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
+    zoomGainNodeRef.current = audioContextRef.current.createGain();
+    convolverNodeRef.current = audioContextRef.current.createConvolver();
+    dryGainNodeRef.current = audioContextRef.current.createGain();
+    wetGainNodeRef.current = audioContextRef.current.createGain();
+    
+    // Connect nodes
+    zoomGainNodeRef.current.connect(dryGainNodeRef.current);
+    zoomGainNodeRef.current.connect(convolverNodeRef.current);
+    convolverNodeRef.current.connect(wetGainNodeRef.current);
+    dryGainNodeRef.current.connect(audioContextRef.current.destination);
+    wetGainNodeRef.current.connect(audioContextRef.current.destination);
 
-      // Load reverb impulse response
-      fetch('/WIDEHALL-1.wav')
-        .then(response => response.arrayBuffer())
-        .then(arrayBuffer => audioContextRef.current.decodeAudioData(arrayBuffer))
-        .then(adjustReverbBuffer)
-        .then(buffer => {
-          convolverNodeRef.current.buffer = buffer;
-        })
-        .catch(error => console.error('Error loading reverb:', error));
-    }
+    // Load reverb impulse response
+    fetch('/WIDEHALL-1.wav')
+      .then(response => response.arrayBuffer())
+      .then(arrayBuffer => audioContextRef.current.decodeAudioData(arrayBuffer))
+      .then(adjustReverbBuffer)
+      .then(buffer => {
+        convolverNodeRef.current.buffer = buffer;
+      })
+      .catch(error => console.error('Error loading reverb:', error));
   }, []);
 
   const adjustReverbBuffer = async (audioBuffer) => {
@@ -84,16 +92,9 @@ const PhylogeneticViewer = ({ treeData, experiment, evoRunId, showSettings, setS
   };
 
 
-
-  useEffect(() => {
-    if (hasInteracted && audioContextRef.current?.state === 'suspended') {
-      audioContextRef.current.resume().catch(console.error);
-    }
-  }, [hasInteracted]);
-
   const playAudioWithFade = async (d) => {
     console.log('----- Playing audio:', d);
-    if (!hasInteracted) return;
+    if (!hasAudioInteraction) return;  // Change this line
     if (!audioContextRef.current || audioContextRef.current.state === 'suspended') {
       console.log('Audio context not ready');
       return;
@@ -233,9 +234,10 @@ const PhylogeneticViewer = ({ treeData, experiment, evoRunId, showSettings, setS
 
   // Initialize D3 visualization
   useEffect(() => {
-    if (!containerRef.current || !treeData) return;
+    if (!containerRef.current || !treeData || mountedRef.current) return;
 
-    console.log("Reinitializing D3 visualization. hasInteracted:", hasInteracted);
+    console.log("Initializing D3 vis, hasAudioInteraction:", hasAudioInteraction);
+    mountedRef.current = true;
 
     // Clear existing content
     d3.select(containerRef.current).selectAll("*").remove();
@@ -322,7 +324,7 @@ const PhylogeneticViewer = ({ treeData, experiment, evoRunId, showSettings, setS
       .attr("class", "node")
       .attr("transform", d => `rotate(${d.x * 180 / Math.PI - 90}) translate(${d.y},0)`);
 
-    const circles = node.append("circle")
+      const circles = node.append("circle")
       .attr("fill", d => d.data.s ? d3.interpolateViridis(d.data.s) : "#999")
       .attr("r", nodeRadius)
       .attr("class", "node-circle")
@@ -341,8 +343,7 @@ const PhylogeneticViewer = ({ treeData, experiment, evoRunId, showSettings, setS
           .style("left", (event.pageX + 10) + "px")
           .style("top", (event.pageY - 28) + "px");
   
-        // Only trigger audio if we've interacted
-        if (hasInteracted) {
+        if (hasAudioInteraction) {  // Change this line
           playAudioWithFade(d);
         }
       })
@@ -353,14 +354,14 @@ const PhylogeneticViewer = ({ treeData, experiment, evoRunId, showSettings, setS
           .duration(500)
           .style("opacity", 0);
   
-        if (hasInteracted) {
+        if (hasAudioInteraction) {  // Change this line
           stopAudioWithFade();
         }
       })
       .on("dblclick", (event, d) => {
         event.preventDefault();
         event.stopPropagation();
-        if (hasInteracted) {
+        if (hasAudioInteraction) {  // Change this line
           downloadNodeSound(d);
         }
       });
@@ -452,24 +453,25 @@ const PhylogeneticViewer = ({ treeData, experiment, evoRunId, showSettings, setS
         currentSourceRef.current.disconnect();
       }
     };
-  }, [treeData, experiment, evoRunId, measureContextSwitches, hasInteracted]);
-
+  }, [treeData, experiment, evoRunId, measureContextSwitches, hasAudioInteraction]);
 
   useEffect(() => {
-    if (!hasInteracted || !audioContextRef.current) return;
-    audioContextRef.current.resume().catch(console.error);
-  }, [hasInteracted]);
-
-
-  // Unified click handler that both enables audio and removes message
-  const handleClick = async () => {
-    if (!hasInteracted) {
+    if (hasAudioInteraction && audioContextRef.current?.state === 'suspended') {
+      audioContextRef.current.resume().catch(console.error);
+    }
+  }, [hasAudioInteraction]);
+  
+  // Update click handler
+  const handleClick = async (e) => {
+    e.stopPropagation();
+    console.log('PhylogeneticViewer click, before:', hasAudioInteraction);
+    if (!hasAudioInteraction) {
       try {
-        await audioContextRef.current?.resume();
-        setHasInteracted(true);
-        console.log('Audio context resumed successfully');
-      } catch (err) {
-        console.error('Error resuming audio context:', err);
+        await audioContextRef.current.resume();
+        onAudioInteraction();  // Just call the prop function
+        console.log('PhylogeneticViewer click, after audio init');
+      } catch (error) {
+        console.error('Error initializing audio:', error);
       }
     }
   };
@@ -486,7 +488,10 @@ const PhylogeneticViewer = ({ treeData, experiment, evoRunId, showSettings, setS
   }, [theme]);
 
   return (
-    <div className={`flex flex-col h-screen ${theme === 'light' ? 'bg-gray-100' : 'bg-gray-950'}`}>
+    <div 
+      className={`flex flex-col h-screen ${theme === 'light' ? 'bg-gray-100' : 'bg-gray-950'}`}
+      onClick={handleClick}
+    >
 
       {/* Enhanced Settings Panel */}
       {showSettings && (
@@ -557,19 +562,13 @@ const PhylogeneticViewer = ({ treeData, experiment, evoRunId, showSettings, setS
           Hover: play sound • Double-click: download
         </div>
 
-        {!hasInteracted && (
-          <div 
-            className="absolute inset-0 flex items-center justify-center bg-black/50 backdrop-blur-sm z-20"
-            onClick={handleClick}
-          >
-            <div 
-              className="bg-gray-800/90 px-4 py-3 rounded text-white text-sm"
-              onClick={e => e.stopPropagation()}
-            >
-              Click anywhere to enable audio playback
-            </div>
+        {!hasAudioInteraction && (
+        <div className="absolute inset-0 flex items-center justify-center bg-black/50 backdrop-blur-sm z-20">
+          <div className="bg-gray-800/90 px-4 py-3 rounded text-white text-sm">
+            Click anywhere to enable audio playback
           </div>
-        )}
+        </div>
+      )}
       </div>
     </div>
   );
