@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Settings } from 'lucide-react';
+import { Settings, Download } from 'lucide-react';
 import * as d3 from 'd3';
 import { LINEAGE_SOUNDS_BUCKET_HOST } from '../constants';
 import AudioManager from './AudioManager';
@@ -18,6 +18,10 @@ const COLORMAP_OPTIONS = {
     '#e55c30', '#fba40a', '#fcffa4'
   ]
 };
+
+const EXPORT_WITH_GRID = true;  // Set to true to include grid lines in SVG export
+const GRID_CANVAS_EXTENSION = 200;  // Number of cells to extend the grid beyond the heatmap
+const GRID_OPACITY = 0.83;  // Opacity of the extended grid
 
 const HeatmapViewer = ({
   showSettings,
@@ -399,6 +403,123 @@ const HeatmapViewer = ({
     }
   };
 
+  const handleExportSVG = useCallback(() => {
+    if (!canvasRef.current || !currentMatrixRef.current) return;
+      
+    const matrix = currentMatrixRef.current;
+    
+    // Calculate dimensions including extension for grid
+    const contentWidth = matrix[0].length;
+    const contentHeight = matrix.length;
+    const totalWidth = EXPORT_WITH_GRID ? contentWidth + (GRID_CANVAS_EXTENSION * 2) : contentWidth;
+    const totalHeight = EXPORT_WITH_GRID ? contentHeight + (GRID_CANVAS_EXTENSION * 2) : contentHeight;
+    
+    // Create SVG with extended dimensions
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('width', totalWidth);
+    svg.setAttribute('height', totalHeight);
+    svg.setAttribute('viewBox', `0 0 ${totalWidth} ${totalHeight}`);
+  
+    // Create a group for the content, translated to accommodate grid extension
+    const contentGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    if (EXPORT_WITH_GRID) {
+      contentGroup.setAttribute('transform', `translate(${GRID_CANVAS_EXTENSION},${GRID_CANVAS_EXTENSION})`);
+    }
+    
+    // Group cells by color but maintain original resolution
+    const colorGroups = new Map();
+  
+    for (let y = 0; y < contentHeight; y++) {
+      for (let x = 0; x < contentWidth; x++) {
+        const cell = matrix[y][x];
+        if (cell.score !== null) {
+          const color = getColorForValue(cell.score);
+          if (!colorGroups.has(color)) {
+            colorGroups.set(color, []);
+          }
+          colorGroups.get(color).push({ x, y, width: 1, height: 1 });
+        }
+      }
+    }
+  
+    // Create elements grouped by color
+    for (const [color, rects] of colorGroups) {
+      const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+      g.setAttribute('fill', color);
+      
+      const pathData = rects.map(rect => 
+        `M${rect.x},${rect.y}h1v1h-1z`
+      ).join(' ');
+      
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('d', pathData);
+      g.appendChild(path);
+      
+      contentGroup.appendChild(g);
+    }
+  
+    svg.appendChild(contentGroup);
+  
+    // Only add grid if enabled
+    if (EXPORT_WITH_GRID) {
+      const gridGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+      gridGroup.setAttribute('class', 'grid');
+      gridGroup.setAttribute('stroke', theme === 'dark' ? '#2a2a2a' : '#d1d5db');
+      gridGroup.setAttribute('stroke-width', '0.05');
+      gridGroup.setAttribute('opacity', GRID_OPACITY.toString());
+  
+      // Add vertical and horizontal lines for entire extended canvas
+      for (let x = 0; x <= totalWidth; x++) {
+        const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        line.setAttribute('x1', x);
+        line.setAttribute('y1', 0);
+        line.setAttribute('x2', x);
+        line.setAttribute('y2', totalHeight);
+        gridGroup.appendChild(line);
+      }
+  
+      for (let y = 0; y <= totalHeight; y++) {
+        const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        line.setAttribute('x1', 0);
+        line.setAttribute('y1', y);
+        line.setAttribute('x2', totalWidth);
+        line.setAttribute('y2', y);
+        gridGroup.appendChild(line);
+      }
+  
+      svg.appendChild(gridGroup);
+    }
+  
+    // Add metadata with extended information
+    const metadata = document.createElementNS('http://www.w3.org/2000/svg', 'metadata');
+    metadata.textContent = JSON.stringify({
+      type: 'heatmap',
+      dimensions: {
+        content: { width: contentWidth, height: contentHeight },
+        total: { width: totalWidth, height: totalHeight },
+        gridExtension: GRID_CANVAS_EXTENSION
+      },
+      generation: selectedGeneration,
+      hasGrid: EXPORT_WITH_GRID,
+      timestamp: Date.now()
+    });
+    svg.appendChild(metadata);
+  
+    // Convert to string (maintain precision)
+    const svgString = new XMLSerializer().serializeToString(svg);
+    
+    // Create download link with original dimensions preserved
+    const blob = new Blob([svgString], { type: 'image/svg+xml' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `heatmap-${contentWidth}x${contentHeight}-gen${selectedGeneration}.svg`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }, [getColorForValue, selectedGeneration, theme]);
+
   if (!matrixData) {
     return (
       <div className="flex-1 flex items-center justify-center text-gray-400">
@@ -578,6 +699,17 @@ const HeatmapViewer = ({
           </div>
         </div>
       )}
+
+      {/* Add download button */}
+      <div className="absolute bottom-2 right-2 z-50">
+        <button
+          onClick={handleExportSVG}
+          className="p-2 rounded-full bg-gray-800/80 hover:bg-gray-700/80 text-white"
+          title="Export as SVG"
+        >
+          <Download size={20} />
+        </button>
+      </div>
     </div>
   );
 };

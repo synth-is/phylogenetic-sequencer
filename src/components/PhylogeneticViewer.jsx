@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Search, Settings } from 'lucide-react';
+import { Search, Settings, Download } from 'lucide-react';
 import * as d3 from 'd3';
 import { pruneTreeForContextSwitches } from './phylogenetic-tree-common';
 import { LINEAGE_SOUNDS_BUCKET_HOST } from '../constants';
@@ -18,6 +18,7 @@ const PhylogeneticViewer = ({
   const [theme, setTheme] = useState('dark');
   const [measureContextSwitches, setMeasureContextSwitches] = useState(false);
   const [reverbAmount, setReverbAmount] = useState(5);
+  const [tooltip, setTooltip] = useState({ show: false, content: '', x: 0, y: 0 });
 
   // Refs
   const searchTermRef = useRef('');  // Search ref instead of state
@@ -242,19 +243,6 @@ const PhylogeneticViewer = ({
     // Clear existing content
     d3.select(containerRef.current).selectAll("*").remove();
 
-    // Add tooltip div if it doesn't exist
-    const tooltip = d3.select("body")
-      .append("div")
-      .attr("class", "tooltip")
-      .style("opacity", 0)
-      .style("position", "absolute")
-      .style("pointer-events", "none")
-      .style("background-color", "rgba(0, 0, 0, 0.8)")
-      .style("color", "white")
-      .style("border-radius", "5px")
-      .style("padding", "10px")
-      .style("font-size", "12px");
-
     // Process the tree based on context switches setting
     const simplifiedRoot = measureContextSwitches ? 
       pruneTreeForContextSwitches(treeData) : 
@@ -330,31 +318,24 @@ const PhylogeneticViewer = ({
       .attr("class", "node-circle")
       .on("mouseover", function(event, d) {
         d3.select(this).attr("fill", "#ff0000");
-        
-        tooltip.transition()
-          .duration(200)
-          .style("opacity", .9);
-        
-        tooltip.html(`
-          ID: ${d.data.name || d.data.id}<br/>
-          Score: ${d.data.s ? d.data.s.toFixed(3) : 'N/A'}<br/>
-          Generation: ${d.data.gN || 'N/A'}
-        `)
-          .style("left", (event.pageX + 10) + "px")
-          .style("top", (event.pageY - 28) + "px");
+        console.log("d.data", d.data);
+        setTooltip({
+          show: true,
+          content: `ID: ${d.data.name || d.data.id}<br/>Score: ${d.data.s ? d.data.s.toFixed(3) : 'N/A'}<br/>Generation: ${d.data.gN || 'N/A'}`,
+          x: event.pageX,
+          y: event.pageY
+        });
   
-        if (hasAudioInteraction) {  // Change this line
+        if (hasAudioInteraction) {
           playAudioWithFade(d);
         }
       })
       .on("mouseout", function(event, d) {
         d3.select(this).attr("fill", d.data.s ? d3.interpolateViridis(d.data.s) : "#999");
         
-        tooltip.transition()
-          .duration(500)
-          .style("opacity", 0);
+        setTooltip({ show: false, content: '', x: 0, y: 0 });
   
-        if (hasAudioInteraction) {  // Change this line
+        if (hasAudioInteraction) {
           stopAudioWithFade();
         }
       })
@@ -447,7 +428,6 @@ const PhylogeneticViewer = ({
     // Cleanup
     return () => {
       window.removeEventListener('resize', handleResize);
-      tooltip.remove();
       if (currentSourceRef.current) {
         currentSourceRef.current.stop();
         currentSourceRef.current.disconnect();
@@ -487,11 +467,50 @@ const PhylogeneticViewer = ({
     }
   }, [theme]);
 
+  const handleExportSVG = useCallback(() => {
+    if (!svgRef.current) return;
+    
+    // Clone the SVG to avoid modifying the displayed one
+    const clonedSvg = svgRef.current.cloneNode(true);
+    
+    // Apply current transform to the main group
+    if (currentZoomTransformRef.current) {
+      const g = clonedSvg.querySelector('g');
+      const transform = currentZoomTransformRef.current;
+      g.setAttribute('transform', `translate(${transform.x},${transform.y}) scale(${transform.k})`);
+    }
+
+    // Convert to string
+    const svgString = new XMLSerializer().serializeToString(clonedSvg);
+    const blob = new Blob([svgString], { type: 'image/svg+xml' });
+    
+    // Create download link
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `phylogenetic-tree-${Date.now()}.svg`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }, []);
+
   return (
     <div 
       className={`flex flex-col h-screen ${theme === 'light' ? 'bg-gray-100' : 'bg-gray-950'}`}
       onClick={handleClick}
     >
+      {/* Add download button next to settings */}
+      <div className="absolute bottom-2 right-2 z-50 flex gap-2">
+        <button
+          onClick={handleExportSVG}
+          className="p-2 rounded-full bg-gray-800/80 hover:bg-gray-700/80 text-white"
+          title="Export as SVG"
+        >
+          <Download size={20} />
+        </button>
+        {/* ...existing settings button... */}
+      </div>
 
       {/* Enhanced Settings Panel */}
       {showSettings && (
@@ -557,6 +576,18 @@ const PhylogeneticViewer = ({
           className="absolute inset-0"
           onClick={handleClick}
         />
+
+        {/* Add tooltip div */}
+        {tooltip.show && (
+          <div
+            className="fixed z-50 px-2 py-1 bg-gray-900 text-white text-sm rounded pointer-events-none"
+            style={{
+              left: tooltip.x + 10,
+              top: tooltip.y - 10
+            }}
+            dangerouslySetInnerHTML={{ __html: tooltip.content }}
+          />
+        )}
 
         <div className="absolute bottom-2 left-2 text-white/70 text-xs">
           Hover: play sound • Double-click: download
