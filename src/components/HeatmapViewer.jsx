@@ -640,6 +640,7 @@ const HeatmapViewer = ({
       className={`relative flex-1 ${theme === 'light' ? 'bg-gray-100' : 'bg-gray-950'}`} 
       onClick={handleClick} 
       ref={containerRef}
+      style={{ height: 'calc(100vh - 4rem)' }} // Adjust container height
     >
       <canvas
         ref={canvasRef}
@@ -657,6 +658,7 @@ const HeatmapViewer = ({
             drawHeatmap();  // Redraw to clear the highlighted cell
           }
         }}
+        style={{ display: 'block' }} // Ensure canvas fills the container
       />
       
       {tooltip.show && (
