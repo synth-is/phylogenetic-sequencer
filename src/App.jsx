@@ -15,7 +15,7 @@ function App() {
   // Existing state
   const [treeData, setTreeData] = useState(null);
   const [lineageTreesIndex, setLineageTreesIndex] = useState(null);
-  const [selectedRun, setSelectedRun] = useState('conf-classScoringVariationsAsContainerDimensions_noOsc');
+  const [selectedRun, setSelectedRun] = useState('evoConf_singleMap_refSingleEmb_mfcc-sans0-statistics_pca_retrainIncr50_zScoreNSynthTrain');
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [showSettings, setShowSettings] = useState(false);
   const [showUnits, setShowUnits] = useState(false);
@@ -26,6 +26,7 @@ function App() {
 
   // Enhanced units state with default parameter values
   const [units, setUnits] = useState([]);
+  const [playingUnits, setPlayingUnits] = useState(new Set());
 
   const fetchedTreesRef = useRef(new Set());
   const fetchedIndexRef = useRef(false);
@@ -67,6 +68,18 @@ function App() {
     }));
   };
 
+  const handleUnitPlaybackChange = (unitId, isPlaying) => {
+    setPlayingUnits(prev => {
+      const next = new Set(prev);
+      if (isPlaying) {
+        next.add(unitId);
+      } else {
+        next.delete(unitId);
+      }
+      return next;
+    });
+  };
+
   // Handler to add a new unit with all configurable parameters
   const handleAddUnit = () => {
     const newUnit = {
@@ -76,6 +89,7 @@ function App() {
       muted: false,
       soloed: false,
       volume: -10,
+      isPlaying: false,  // Add playback state
       // Live code parameters
       strudelCode: DEFAULT_STRUDEL_CODE,  // Add default Strudel code
       liveCodeEngine: 'Strudel',          // Default to Strudel engine
@@ -220,7 +234,11 @@ function App() {
           {showUnits && (
             <>
               <UnitsPanel
-                units={units}
+                units={units.map(unit => ({
+                  ...unit,
+                  isPlaying: playingUnits.has(unit.id)
+                }))}
+                onPlaybackChange={handleUnitPlaybackChange}
                 selectedUnitId={selectedUnitId}
                 onSelectUnit={handleSelectUnit}
                 onAddUnit={handleAddUnit}
@@ -235,6 +253,7 @@ function App() {
                   units={units}
                   onClose={() => setSelectedUnitId(null)}
                   onUpdateUnit={handleUpdateUnit}
+                  onPlaybackChange={handleUnitPlaybackChange}
                 />
               )}
             </>

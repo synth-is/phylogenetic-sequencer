@@ -6,6 +6,28 @@ import { DEFAULT_STRUDEL_CODE } from '../constants';
 import '@strudel/repl';
 import { useStrudelPattern } from './useStrudelPattern';
 
+const Slider = ({ label, value, onChange, min = 0, max = 1, step = 0.01, centered = false }) => (
+  <div className="space-y-1">
+    <div className="flex justify-between text-sm">
+      <span className="text-gray-300">{label}</span>
+      <span className="text-gray-400">{value.toFixed(2)}</span>
+    </div>
+    <input
+      type="range"
+      min={min}
+      max={max}
+      step={step}
+      value={value}
+      onChange={(e) => onChange(parseFloat(e.target.value))}
+      className={`w-full h-1.5 rounded-sm appearance-none bg-gray-700 
+        [&::-webkit-slider-thumb]:w-2.5 [&::-webkit-slider-thumb]:h-2.5 
+        [&::-webkit-slider-thumb]:rounded-sm [&::-webkit-slider-thumb]:bg-blue-500 
+        [&::-webkit-slider-thumb]:appearance-none`}
+      style={centered ? { background: `linear-gradient(to right, #374151 50%, #374151 50%)` } : {}}
+    />
+  </div>
+);
+
 const CollapsibleSection = ({ title, children }) => {
   const [isOpen, setIsOpen] = useState(true);
   
@@ -27,88 +49,39 @@ const CollapsibleSection = ({ title, children }) => {
   );
 };
 
-const Slider = ({ label, value, onChange, min = 0, max = 1, step = 0.01, centered = false }) => {
-  return (
-    <div className="space-y-1">
-      <div className="flex justify-between text-sm">
-        <span className="text-gray-300">{label}</span>
-        <span className="text-gray-400">{value.toFixed(2)}</span>
-      </div>
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        onChange={(e) => onChange(parseFloat(e.target.value))}
-        className={`w-full h-1.5 rounded-sm appearance-none bg-gray-700 
-          [&::-webkit-slider-thumb]:w-2.5 [&::-webkit-slider-thumb]:h-2.5 
-          [&::-webkit-slider-thumb]:rounded-sm [&::-webkit-slider-thumb]:bg-blue-500 
-          [&::-webkit-slider-thumb]:appearance-none`}
-        style={centered ? { background: `linear-gradient(to right, #374151 50%, #374151 50%)` } : {}}
-      />
-    </div>
-  );
-};
-
 const UnitConfigPanel = ({ unit, units, onClose, onUpdateUnit }) => {
   const [showDebugger, setShowDebugger] = useState(false);
+  const [activeTab, setActiveTab] = useState('Unit');
+  const [liveCodeEngine, setLiveCodeEngine] = useState(unit.liveCodeEngine || 'Strudel');
+  const editorRef = useRef(null);
+  
   const {
     debugLog,
     applyPatternFromEditor,
     testPatternUpdate,
     clearDebugLog,
-    startAll,
-    stopAll
+    registerReplInstance,
+    unregisterReplInstance
   } = useStrudelPattern(unit.id);
 
-  const tabs = ['Unit', 'Sampler', 'Live Code'];
-  const [activeTab, setActiveTab] = useState('Unit');
-  const [liveCodeEngine, setLiveCodeEngine] = useState(unit.liveCodeEngine || 'Strudel');
-  const editorRefs = useRef(new Map());
-
-  // Update liveCodeEngine when unit changes
-  useEffect(() => {
-    setLiveCodeEngine(unit.liveCodeEngine || 'Strudel');
-  }, [unit.id]);
-
-  const handleValueChange = (key, value) => {
-    onUpdateUnit(unit.id, { ...unit, [key]: value });
-  };
-
   const handleEditorReady = (editor) => {
-    console.log('editorRefs.current.get(unit.id)', editorRefs.current.get(unit.id));
-
-    const shouldPopulateEditor = !editorRefs.current.get(unit.id);
-
     console.log(`Strudel editor ready for unit ${unit.id}`);
-    editorRefs.current.set(unit.id, editor);
+    editorRef.current = editor;
+    registerReplInstance(editor);
 
-
-    if (shouldPopulateEditor) {
-      
-      // editor.setCode(Date.now().toString());
-      console.log('editor.repl', editor.repl);
-      // editor.repl.setPattern( note("c3", ["eb3", "g3"]).sound("sawtooth").delay(1) );
-      const randomFastValue = Math.floor(Math.random() * 10) + 1; // Random integer between 1 and 10
-      const waveforms = ["sawtooth", "square", "triangle", "sine"];
-      const randomWaveform = waveforms[Math.floor(Math.random() * waveforms.length)];
-      const code = `note("c2 <eb2 <g2 g1>>".fast(${randomFastValue})).sound("${randomWaveform}")`;
-      editorRefs.current.get(unit.id).setCode( code );
-      editor.repl.evaluate( code );
-      // editor.repl.setCode(`note("c2 <eb2 <g2 g1>>".fast(2)).sound("<sawtooth square triangle sine>").delay(1)`);
-      
-      editor.repl.stop();
-
-    }
-  };
-
-  const handlePatternUpdate = (patternId, updateInfo) => {
-    console.log(`Pattern ${patternId} updated for unit ${updateInfo.unitId}:`, updateInfo);
+    // Initialize with a random pattern
+    const randomFastValue = Math.floor(Math.random() * 10) + 1;
+    const waveforms = ["sawtooth", "square", "triangle", "sine"];
+    const randomWaveform = waveforms[Math.floor(Math.random() * waveforms.length)];
+    const code = `note("c2 <eb2 <g2 g1>>".fast(${randomFastValue})).sound("${randomWaveform}")`;
+    
+    editor.repl.setCode(code);
+    editor.repl.evaluate(code);
+    editor.repl.stop(); // Start stopped
   };
 
   const handleCodeChange = (newCode) => {
-    console.log(`Handling code change for unit ${unit.id}:`, newCode);
+    console.log(`Code change in unit ${unit.id}:`, newCode);
     onUpdateUnit(unit.id, {
       ...unit,
       strudelCode: newCode
@@ -120,22 +93,49 @@ const UnitConfigPanel = ({ unit, units, onClose, onUpdateUnit }) => {
     onUpdateUnit(unit.id, { ...unit, liveCodeEngine: engine });
   };
 
-  const handleApplyPattern = () => {
-    const newPattern = applyPatternFromEditor();
-    if (newPattern) {
-      onUpdateUnit(unit.id, {
-        ...unit,
-        strudelCode: newPattern
-      });
+  const handlePlay = () => {
+    if (editorRef.current?.repl) {
+      console.log(`Starting playback for unit ${unit.id}`);
+      editorRef.current.repl.start();
     }
   };
 
+  const handleStop = () => {
+    if (editorRef.current?.repl) {
+      console.log(`Stopping playback for unit ${unit.id}`);
+      editorRef.current.repl.stop();
+    }
+  };
+
+  const handleApplyChanges = () => {
+    const editor = editorRef.current;
+    if (editor?.repl) {
+      console.log(`Applying changes for unit ${unit.id}`);
+      const currentCode = editor.repl.getCode();
+      editor.repl.evaluate(currentCode);
+    }
+  };
+
+  const handleValueChange = (key, value) => {
+    onUpdateUnit(unit.id, { ...unit, [key]: value });
+  };
+
+  // Cleanup when component unmounts or unit changes
+  useEffect(() => {
+    return () => {
+      if (editorRef.current?.repl) {
+        console.log(`Cleaning up editor for unit ${unit.id}`);
+        unregisterReplInstance();
+        editorRef.current = null;
+      }
+    };
+  }, [unit.id]);
+
   return (
     <div className="w-1/3 bg-gray-900/95 backdrop-blur border-l border-gray-800">
-      {/* Header with tabs */}
       <div className="flex items-center border-b border-gray-800">
         <div className="flex-1 flex">
-          {tabs.map(tab => (
+          {['Unit', 'Sampler', 'Live Code'].map(tab => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -280,99 +280,121 @@ const UnitConfigPanel = ({ unit, units, onClose, onUpdateUnit }) => {
                 ChucK
               </button>
             </div>
-          {/* New Control Panel */}
-          <div className="flex items-center gap-2 p-2 bg-gray-800/50 rounded">
-            <button
-              onClick={handleApplyPattern}
-              className="px-3 py-1.5 bg-blue-600 text-white rounded-sm flex items-center gap-1 text-xs"
-            >
-              <RefreshCw size={12} />
-              Apply Changes
-            </button>
-            
-            <button
-              onClick={() => testPatternUpdate()}
-              className="px-3 py-1.5 bg-purple-600 text-white rounded-sm flex items-center gap-1 text-xs"
-            >
-              <Code size={12} />
-              Test Update
-            </button>
 
-            <button
-              onClick={() => setShowDebugger(!showDebugger)}
-              className="px-3 py-1.5 bg-amber-600 text-white rounded-sm flex items-center gap-1 text-xs"
-            >
-              <Bug size={12} />
-              {showDebugger ? 'Hide Debug' : 'Show Debug'}
-            </button>
+            <div className="flex items-center gap-2 p-2 bg-gray-800/50 rounded">
+              <button
+                onClick={handleApplyChanges}
+                className="px-3 py-1.5 bg-blue-600 text-white rounded-sm flex items-center gap-1 text-xs"
+              >
+                <RefreshCw size={12} />
+                Apply Changes
+              </button>
+              
+              <button
+                onClick={testPatternUpdate}
+                className="px-3 py-1.5 bg-purple-600 text-white rounded-sm flex items-center gap-1 text-xs"
+              >
+                <Code size={12} />
+                Test Update
+              </button>
 
-            <div className="flex-1" />
+              <button
+                onClick={() => setShowDebugger(!showDebugger)}
+                className="px-3 py-1.5 bg-amber-600 text-white rounded-sm flex items-center gap-1 text-xs"
+              >
+                <Bug size={12} />
+                {showDebugger ? 'Hide Debug' : 'Show Debug'}
+              </button>
 
-            <button
-              onClick={startAll}
-              className="p-1.5 bg-green-600 text-white rounded-sm"
-            >
-              <Play size={14} />
-            </button>
-            
-            <button
-              onClick={stopAll}
-              className="p-1.5 bg-red-600 text-white rounded-sm"
-            >
-              <Square size={14} />
-            </button>
-          </div>
+              <div className="flex-1" />
 
-          {/* Debug Panel */}
-          {showDebugger && (
-            <div className="p-2 bg-gray-800/50 rounded space-y-2">
-              <div className="flex items-center justify-between">
-                <h3 className="text-sm text-white font-medium">Pattern Debug Log</h3>
-                <button
-                  onClick={clearDebugLog}
-                  className="text-xs text-gray-400 hover:text-white"
-                >
-                  Clear Log
-                </button>
-              </div>
-              <div className="space-y-1 max-h-40 overflow-y-auto text-xs">
-                {debugLog.map((entry, i) => (
-                  <div
-                    key={i}
-                    className={`p-1 rounded ${
-                      entry.unitId === unit.id 
-                        ? 'bg-blue-900/30 text-blue-200' 
-                        : 'bg-gray-800/50 text-gray-400'
-                    }`}
-                  >
-                    <span className="text-gray-500">{entry.timestamp.split('T')[1].split('.')[0]}</span>
-                    {' - '}
-                    <span className="text-gray-400">Unit {entry.unitId}:</span>
-                    {' '}
-                    {entry.message}
-                  </div>
-                ))}
-              </div>
+              <button
+                onClick={handlePlay}
+                className="p-1.5 bg-green-600 text-white rounded-sm"
+              >
+                <Play size={14} />
+              </button>
+              
+              <button
+                onClick={handleStop}
+                className="p-1.5 bg-red-600 text-white rounded-sm"
+              >
+                <Square size={14} />
+              </button>
             </div>
-          )}
 
-          {/* Editor */}
-          <div className="relative flex-1" style={{ minHeight: '300px' }}>
-            {liveCodeEngine === 'Strudel' && (
-              <StrudelEditor
-                key={unit.id}
-                unitId={unit.id}
-                initialCode={unit.strudelCode}
-                onCodeChange={newCode => {
-                  console.log(`Code change in unit ${unit.id}:`, newCode);
-                }}
-                onEditorReady={handleEditorReady}
-              />
+            {showDebugger && (
+              <div className="p-2 bg-gray-800/50 rounded space-y-2">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm text-white font-medium">Pattern Debug Log</h3>
+                  <button
+                    onClick={clearDebugLog}
+                    className="text-xs text-gray-400 hover:text-white"
+                  >
+                    Clear Log
+                  </button>
+                </div>
+                <div className="space-y-1 max-h-40 overflow-y-auto text-xs">
+                  {debugLog.map((entry, i) => (
+                    <div
+                      key={i}
+                      className={`p-1 rounded ${
+                        entry.unitId === unit.id 
+                          ? 'bg-blue-900/30 text-blue-200' 
+                          : 'bg-gray-800/50 text-gray-400'
+                      }`}
+                    >
+                      <span className="text-gray-500">{entry.timestamp.split('T')[1].split('.')[0]}</span>
+                      {' - '}
+                      <span className="text-gray-400">Unit {entry.unitId}:</span>
+                      {' '}
+                      {entry.message}
+                    </div>
+                  ))}
+                </div>
+              </div>
             )}
-            {liveCodeEngine === 'ChucK' && <ChuckEditor />}
-          </div>
-        </div>
 
+            <div className="relative flex-1" style={{ minHeight: '300px' }}>
+              {liveCodeEngine === 'Strudel' ? (
+                <StrudelEditor
+                  key={unit.id}
+                  unitId={unit.id}
+                  initialCode={unit.strudelCode || DEFAULT_STRUDEL_CODE}
+                  onCodeChange={handleCodeChange}
+                  onEditorReady={handleEditorReady}
+                />
+              ) : (
+                <ChuckEditor />
+              )}
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'Unit' && (
+          <CollapsibleSection title="Sequence">
+            <Slider 
+              label="Speed" 
+              value={unit.speed || 0} 
+              onChange={val => handleValueChange('speed', val)} 
+              min={-2} 
+              max={2} 
+              centered={true}
+            />
+          </CollapsibleSection>
+        )}
+
+        {activeTab === 'Sampler' && (
+          <CollapsibleSection title="Sample">
+            <Slider 
+              label="Pitch" 
+              value={unit.pitch || 0} 
+              onChange={val => handleValueChange('pitch', val)} 
+              min={-12} 
+              max={12} 
+              centered={true}
+            />
+          </CollapsibleSection>
         )}
       </div>
     </div>
