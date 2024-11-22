@@ -38,7 +38,7 @@ const PhylogeneticViewer = ({
   const currentSourceRef = useRef(null);
   const currentGainNodeRef = useRef(null);
   const currentPlayingNodeRef = useRef(null);
-  const mountedRef = useRef(false);
+  const treeInitializedRef = useRef(false);
 
   // Constants
   const FADE_TIME = 0.1;
@@ -47,7 +47,7 @@ const PhylogeneticViewer = ({
 
   // Initialize Audio Context and nodes
   useEffect(() => {
-    if (audioContextRef.current || mountedRef.current) return;
+    if (audioContextRef.current) return;
     
     audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
     zoomGainNodeRef.current = audioContextRef.current.createGain();
@@ -235,13 +235,13 @@ const PhylogeneticViewer = ({
 
   // Initialize D3 visualization
   useEffect(() => {
-    if (!containerRef.current || !treeData || mountedRef.current) return;
+    if (!containerRef.current || !treeData) return;
+    
+    // Clear existing content and reset initialization flag
+    d3.select(containerRef.current).selectAll("*").remove();
+    treeInitializedRef.current = false;
 
     console.log("Initializing D3 vis, hasAudioInteraction:", hasAudioInteraction);
-    mountedRef.current = true;
-
-    // Clear existing content
-    d3.select(containerRef.current).selectAll("*").remove();
 
     // Process the tree based on context switches setting
     const simplifiedRoot = measureContextSwitches ? 
@@ -326,7 +326,7 @@ const PhylogeneticViewer = ({
           y: event.pageY
         });
   
-        if (hasAudioInteraction) {
+        if (hasAudioInteraction && audioContextRef.current) {
           playAudioWithFade(d);
         }
       })
@@ -346,6 +346,8 @@ const PhylogeneticViewer = ({
           downloadNodeSound(d);
         }
       });
+
+    treeInitializedRef.current = true;
 
     // Add zoom behavior that maintains mouse position as zoom center
     // Optimize zoom handling
