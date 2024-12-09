@@ -23,6 +23,85 @@ const EXPORT_WITH_GRID = true;  // Set to true to include grid lines in SVG expo
 const GRID_CANVAS_EXTENSION = 200;  // Number of cells to extend the grid beyond the heatmap
 const GRID_OPACITY = 0.83;  // Opacity of the extended grid
 
+const getMatrixDimensions = (matrix) => {
+  const dimensions = [];
+  let current = matrix;
+  while (Array.isArray(current)) {
+    dimensions.push(current.length);
+    current = current[0];
+  }
+  return dimensions;
+};
+
+const flatten2D = (matrix, dimensions) => {
+  if (dimensions.length <= 2) return matrix;
+
+  const [height, width, ...extraDims] = dimensions;
+  const totalExtraDims = extraDims.reduce((a, b) => a * b, 1);
+  
+  // Calculate grid layout
+  const gridSize = Math.ceil(Math.sqrt(totalExtraDims));
+  const sectionsX = gridSize;
+  const sectionsY = Math.ceil(totalExtraDims / gridSize);
+  
+  // Create the flattened 2D matrix with exact dimensions
+  const flattenedWidth = width * sectionsX;
+  const flattenedHeight = height * sectionsY;
+  const flattened = Array(flattenedHeight).fill().map(() => 
+    Array(flattenedWidth).fill().map(() => ({ score: null, genomeId: null }))
+  );
+
+  // Helper to get n-dimensional coordinates from index
+  const getCoords = (index, dims) => {
+    const coords = [];
+    let remaining = index;
+    for (let i = dims.length - 1; i >= 0; i--) {
+      const dim = dims[i];
+      coords.unshift(remaining % dim);
+      remaining = Math.floor(remaining / dim);
+    }
+    return coords;
+  };
+
+  // Fill the flattened matrix
+  for (let sectionIndex = 0; sectionIndex < totalExtraDims; sectionIndex++) {
+    // Calculate section position in grid
+    const sectionY = Math.floor(sectionIndex / sectionsX);
+    const sectionX = sectionIndex % sectionsX;
+    
+    // Get coordinates in extra dimensions
+    const coords = getCoords(sectionIndex, extraDims);
+    
+    // Navigate to correct section in source matrix
+    let current = matrix;
+    for (const coord of coords) {
+      if (current && current[coord]) {
+        current = current[coord];
+      } else {
+        // Handle out of bounds or invalid sections
+        current = null;
+        break;
+      }
+    }
+
+    // Only copy if we have valid data
+    if (current) {
+      // Copy the section to the flattened matrix
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          const destY = sectionY * height + y;
+          const destX = sectionX * width + x;
+          if (destY < flattenedHeight && destX < flattenedWidth && current[y] && current[y][x]) {
+            flattened[destY][destX] = current[y][x];
+          }
+        }
+      }
+    }
+  }
+
+  return flattened;
+};
+
 const HeatmapViewer = ({
   showSettings,
   setShowSettings,
@@ -60,6 +139,82 @@ const HeatmapViewer = ({
   const lastMatrixUrlRef = useRef(null);
   const mountedRef = useRef(false);
 
+  // Define getColorForValue first
+  const getColorForValue = useCallback((value) => {
+    if (value === null) return theme === 'dark' ? '#1a1a1a' : '#e5e5e5';
+    
+    const colors = COLORMAP_OPTIONS[selectedColormap];
+    const index = Math.floor(value * (colors.length - 1));
+    return colors[index];
+  }, [selectedColormap, theme]);
+
+  // Then define drawHeatmap which depends on getColorForValue
+  const drawHeatmap = useCallback(() => {
+    if (!currentMatrixRef.current || !canvasRef.current) return;
+
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d');
+    const matrix = currentMatrixRef.current;  // Use stored matrix instead of accessing via selectedGeneration
+    
+    const width = canvas.width;
+    const height = canvas.height;
+    const transform = transformRef.current;
+    
+    // Clear canvas with theme-appropriate background
+    ctx.fillStyle = theme === 'dark' ? '#111827' : '#f3f4f6';
+    ctx.fillRect(0, 0, width, height);
+    
+    ctx.save();
+    ctx.translate(transform.x, transform.y);
+    ctx.scale(transform.k, transform.k);
+    
+    // Calculate cell dimensions
+    let cellWidth, cellHeight;
+    if (useSquareCells) {
+      const size = Math.min(width / matrix[0].length, height / matrix.length);
+      cellWidth = cellHeight = size;
+    } else {
+      cellWidth = width / matrix[0].length;
+      cellHeight = height / matrix.length;
+    }
+    
+    // Draw cells
+    matrix.forEach((row, i) => {
+      row.forEach((cell, j) => {
+        if( cell ) { // 
+          const x = j * cellWidth;
+          const y = i * cellHeight;
+          
+          const playingCell = currentlyPlayingCellRef.current;
+          // Compare against actual flattened coordinates
+          if (playingCell?.i === i && 
+              playingCell?.j === j && 
+              playingCell?.generation === selectedGeneration) {
+            ctx.fillStyle = '#ff0000';
+          } else {
+            ctx.fillStyle = getColorForValue(cell.score);
+          }
+          
+          ctx.fillRect(x, y, cellWidth, cellHeight);
+          ctx.strokeStyle = theme === 'dark' ? '#2a2a2a' : '#d1d5db';
+          ctx.strokeRect(x, y, cellWidth, cellHeight);
+        }
+      });
+    });
+    
+    ctx.restore();
+  }, [getColorForValue, theme, useSquareCells, selectedGeneration]);
+
+  // Then define all the effects that use drawHeatmap
+  useEffect(() => {
+    if (matrixData && selectedGeneration >= 0) {
+      const rawMatrix = matrixData.scoreAndGenomeMatrices[selectedGeneration];
+      const dimensions = getMatrixDimensions(rawMatrix);
+      const flattened = flatten2D(rawMatrix, dimensions);
+      currentMatrixRef.current = flattened;
+      drawHeatmap();
+    }
+  }, [matrixData, selectedGeneration, drawHeatmap]);
 
   // Initialize Audio Context
   useEffect(() => {
@@ -139,74 +294,16 @@ const HeatmapViewer = ({
     }
   }, [matrixData]);
 
-  const getColorForValue = useCallback((value) => {
-    if (value === null) return theme === 'dark' ? '#1a1a1a' : '#e5e5e5';
-    
-    const colors = COLORMAP_OPTIONS[selectedColormap];
-    const index = Math.floor(value * (colors.length - 1));
-    return colors[index];
-  }, [selectedColormap, theme]);
-
   // Update matrix ref when generation changes
   useEffect(() => {
     if (matrixData && selectedGeneration >= 0) {
-      currentMatrixRef.current = matrixData.scoreAndGenomeMatrices[selectedGeneration];
+      const rawMatrix = matrixData.scoreAndGenomeMatrices[selectedGeneration];
+      const dimensions = getMatrixDimensions(rawMatrix);
+      const flattened = flatten2D(rawMatrix, dimensions);
+      currentMatrixRef.current = flattened;
+      drawHeatmap();
     }
-  }, [matrixData, selectedGeneration]);
-
-  // Update drawHeatmap to use the stored matrix
-  const drawHeatmap = useCallback(() => {
-    if (!currentMatrixRef.current || !canvasRef.current) return;
-
-    const canvas = canvasRef.current;
-    const ctx = canvas.getContext('2d');
-    const matrix = currentMatrixRef.current;  // Use stored matrix instead of accessing via selectedGeneration
-    
-    const width = canvas.width;
-    const height = canvas.height;
-    const transform = transformRef.current;
-    
-    // Clear canvas with theme-appropriate background
-    ctx.fillStyle = theme === 'dark' ? '#111827' : '#f3f4f6';
-    ctx.fillRect(0, 0, width, height);
-    
-    ctx.save();
-    ctx.translate(transform.x, transform.y);
-    ctx.scale(transform.k, transform.k);
-    
-    // Calculate cell dimensions
-    let cellWidth, cellHeight;
-    if (useSquareCells) {
-      const size = Math.min(width / matrix[0].length, height / matrix.length);
-      cellWidth = cellHeight = size;
-    } else {
-      cellWidth = width / matrix[0].length;
-      cellHeight = height / matrix.length;
-    }
-    
-    // Draw cells
-    matrix.forEach((row, i) => {
-      row.forEach((cell, j) => {
-        const x = j * cellWidth;
-        const y = i * cellHeight;
-        
-        const playingCell = currentlyPlayingCellRef.current;
-        if (playingCell?.i === i && 
-            playingCell?.j === j && 
-            playingCell?.generation === selectedGeneration) {
-          ctx.fillStyle = '#ff0000';
-        } else {
-          ctx.fillStyle = getColorForValue(cell.score);
-        }
-        
-        ctx.fillRect(x, y, cellWidth, cellHeight);
-        ctx.strokeStyle = theme === 'dark' ? '#2a2a2a' : '#d1d5db';
-        ctx.strokeRect(x, y, cellWidth, cellHeight);
-      });
-    });
-    
-    ctx.restore();
-  }, [getColorForValue, theme, useSquareCells, selectedGeneration]); 
+  }, [matrixData, selectedGeneration, drawHeatmap]);
 
   // Handle window resize
   useEffect(() => {
@@ -279,7 +376,13 @@ const HeatmapViewer = ({
   const getMatrixIndices = useCallback((canvasX, canvasY) => {
     if (!matrixData || !canvasRef.current) return null;
   
-    const matrix = matrixData.scoreAndGenomeMatrices[selectedGeneration];
+    const rawMatrix = matrixData.scoreAndGenomeMatrices[selectedGeneration];
+    const dimensions = getMatrixDimensions(rawMatrix);
+    const [baseHeight, baseWidth, ...extraDims] = dimensions;
+    const totalExtraDims = extraDims.reduce((a, b) => a * b, 1);
+    const sqrtExtra = Math.ceil(Math.sqrt(totalExtraDims));
+    
+    const matrix = currentMatrixRef.current;
     const transform = transformRef.current;
     
     // Convert canvas coordinates to matrix space
@@ -299,7 +402,16 @@ const HeatmapViewer = ({
     const j = Math.floor(x / cellWidth);
     
     if (i >= 0 && i < matrix.length && j >= 0 && j < matrix[0].length) {
-      return { i, j };
+      const sectionX = Math.floor(j / baseWidth);
+      const sectionY = Math.floor(i / baseHeight);
+      const sectionIndex = sectionY * sqrtExtra + sectionX;
+      
+      return {
+        i: i % baseHeight,
+        j: j % baseWidth,
+        sectionIndex,
+        dimensions
+      };
     }
     return null;
   }, [matrixData, selectedGeneration, useSquareCells]);  
@@ -315,11 +427,20 @@ const HeatmapViewer = ({
       console.log('Audio URL:', audioUrl);
       const result = await audioManagerRef.current.playSound(audioUrl, indices);
       
-      if (result) {
+      if (result && indices?.dimensions) {
+        const gridSize = Math.ceil(Math.sqrt((indices.dimensions.length > 2 ? 
+          indices.dimensions.slice(2).reduce((a, b) => a * b, 1) : 1)));
+
+        // Store the actual flattened coordinates
+        const flattenedI = indices.i + Math.floor(indices.sectionIndex / gridSize) * indices.dimensions[0];
+        const flattenedJ = indices.j + (indices.sectionIndex % gridSize) * indices.dimensions[1];
+        
         currentlyPlayingCellRef.current = {
-          ...indices,
+          i: flattenedI,
+          j: flattenedJ,
           generation: selectedGeneration
         };
+        
         requestAnimationFrame(drawHeatmap);
         
         const voice = audioManagerRef.current.voices.get(result.voiceId);
@@ -349,28 +470,34 @@ const HeatmapViewer = ({
     const indices = getMatrixIndices(canvasX, canvasY);
     
     if (indices) {
-      const { i, j } = indices;
+      const { i, j, sectionIndex, dimensions } = indices;
       const matrix = matrixData.scoreAndGenomeMatrices[selectedGeneration];
-      const cell = matrix[i][j];
+      const gridSize = Math.ceil(Math.sqrt((dimensions.length > 2 ? 
+        dimensions.slice(2).reduce((a, b) => a * b, 1) : 1)));
       
-      if (cell.score !== null) {
+      const flattenedI = i + Math.floor(sectionIndex / gridSize) * dimensions[0];
+      const flattenedJ = j + (sectionIndex % gridSize) * dimensions[1];
+      
+      const cell = currentMatrixRef.current[flattenedI][flattenedJ];
+      
+      if (cell?.score !== null) {
         setTooltip({
           show: true,
-          content: `Score: ${cell.score.toFixed(3)} (Gen ${selectedGeneration * 500})`,
+          content: `Score: ${cell.score.toFixed(3)} (Gen ${selectedGeneration * 500}, Section ${sectionIndex + 1}/${dimensions.length > 2 ? dimensions.slice(2).reduce((a, b) => a * b, 1) : 1})`,
           x: event.clientX,
           y: event.clientY
         });
         
-        const cellKey = `${i}-${j}`;
+        const cellKey = `${flattenedI}-${flattenedJ}`;
         const currentKey = currentCellRef.current ? 
           `${currentCellRef.current.i}-${currentCellRef.current.j}` : null;
         
         if (cellKey !== currentKey) {
-          currentCellRef.current = { i, j };
+          currentCellRef.current = { i: flattenedI, j: flattenedJ };
           
-          if (!silentMode && !audioManagerRef.current?.isCellPlaying(i, j)) {
+          if (!silentMode && !audioManagerRef.current?.isCellPlaying(flattenedI, flattenedJ)) {
             console.log('Playing sound for cell:', cell);
-            playSound(cell, { i, j });
+            playSound(cell, indices);
           }
         }
       } else {
