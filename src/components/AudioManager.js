@@ -91,9 +91,10 @@ class AudioManager {
 
     const cellKey = `${cellIndices.i}-${cellIndices.j}`;
     
-    if (this.playingCells.has(cellKey)) {
-      return null;
-    }
+    // Remove the early return that prevents replaying
+    // if (this.playingCells.has(cellKey)) {
+    //   return null;
+    // }
 
     let voiceId = this.findFreeVoice();
     

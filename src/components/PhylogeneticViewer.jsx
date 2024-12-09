@@ -3,7 +3,7 @@ import { Search, Settings, Download } from 'lucide-react';
 import * as d3 from 'd3';
 import { pruneTreeForContextSwitches } from './phylogenetic-tree-common';
 import { LINEAGE_SOUNDS_BUCKET_HOST } from '../constants';
-
+import AudioManager from './AudioManager';
 
 const PhylogeneticViewer = ({ 
   treeData, 
@@ -19,6 +19,8 @@ const PhylogeneticViewer = ({
   const [measureContextSwitches, setMeasureContextSwitches] = useState(false);
   const [reverbAmount, setReverbAmount] = useState(5);
   const [tooltip, setTooltip] = useState({ show: false, content: '', x: 0, y: 0 });
+  const [maxVoices, setMaxVoices] = useState(4);
+  const [silentMode, setSilentMode] = useState(false);
 
   // Refs
   const searchTermRef = useRef('');  // Search ref instead of state
@@ -29,175 +31,98 @@ const PhylogeneticViewer = ({
   const linksRef = useRef(null);
   const currentZoomTransformRef = useRef(null);
 
-  // Audio refs
-  const audioContextRef = useRef(null);
-  const zoomGainNodeRef = useRef(null);
-  const convolverNodeRef = useRef(null);
-  const dryGainNodeRef = useRef(null);
-  const wetGainNodeRef = useRef(null);
-  const currentSourceRef = useRef(null);
-  const currentGainNodeRef = useRef(null);
-  const currentPlayingNodeRef = useRef(null);
-  const treeInitializedRef = useRef(false);
+  // Replace audio refs with AudioManager
+  const audioManagerRef = useRef(null);
+  const currentlyPlayingNodeRef = useRef(null);
+  const treeInitializedRef = useRef(false);  // Add this line
+
+  // Add active nodes tracking
+  const activeNodesRef = useRef(new Set());
 
   // Constants
   const FADE_TIME = 0.1;
   const BASE_VOLUME = 1;
 
-
-  // Initialize Audio Context and nodes
+  // Remove old audio setup code and replace with AudioManager initialization
   useEffect(() => {
-    if (audioContextRef.current) return;
-    
-    audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
-    zoomGainNodeRef.current = audioContextRef.current.createGain();
-    convolverNodeRef.current = audioContextRef.current.createConvolver();
-    dryGainNodeRef.current = audioContextRef.current.createGain();
-    wetGainNodeRef.current = audioContextRef.current.createGain();
-    
-    // Connect nodes
-    zoomGainNodeRef.current.connect(dryGainNodeRef.current);
-    zoomGainNodeRef.current.connect(convolverNodeRef.current);
-    convolverNodeRef.current.connect(wetGainNodeRef.current);
-    dryGainNodeRef.current.connect(audioContextRef.current.destination);
-    wetGainNodeRef.current.connect(audioContextRef.current.destination);
+    if (!audioManagerRef.current) {
+      audioManagerRef.current = new AudioManager();
+      audioManagerRef.current.initialize();
+    }
+    if (audioManagerRef.current) {
+      audioManagerRef.current.maxVoices = maxVoices;
+    }
+  }, [maxVoices]);
 
-    // Load reverb impulse response
-    fetch('/WIDEHALL-1.wav')
-      .then(response => response.arrayBuffer())
-      .then(arrayBuffer => audioContextRef.current.decodeAudioData(arrayBuffer))
-      .then(adjustReverbBuffer)
-      .then(buffer => {
-        convolverNodeRef.current.buffer = buffer;
-      })
-      .catch(error => console.error('Error loading reverb:', error));
+  // Update redrawNodes to be more defensive
+  const redrawNodes = useCallback(() => {
+    if (!gRef.current || !audioManagerRef.current) return;
+    
+    const nodes = gRef.current.querySelectorAll('.node-circle');
+    const playingSounds = new Set([...audioManagerRef.current.playingCells.keys()]);
+    
+    nodes.forEach(node => {
+      const d = d3.select(node).datum();
+      const cellKey = `${d.data.id}-${d.data.id}`;
+      const isPlaying = playingSounds.has(cellKey);
+      const color = isPlaying ? '#ff0000' : 
+        (d.data.s ? d3.interpolateViridis(d.data.s) : "#999");
+      node.setAttribute('fill', color);
+    });
   }, []);
 
-  const adjustReverbBuffer = async (audioBuffer) => {
-    const contextSampleRate = audioContextRef.current.sampleRate;
-    const contextChannels = 2;
-
-    if (audioBuffer.sampleRate !== contextSampleRate || audioBuffer.numberOfChannels !== contextChannels) {
-      const offlineCtx = new OfflineAudioContext(
-        contextChannels,
-        audioBuffer.duration * contextSampleRate,
-        contextSampleRate
-      );
-      const bufferSource = offlineCtx.createBufferSource();
-      bufferSource.buffer = audioBuffer;
-      bufferSource.connect(offlineCtx.destination);
-      bufferSource.start();
-      return offlineCtx.startRendering();
-    }
-    return audioBuffer;
-  };
-
-
-  const playAudioWithFade = async (d) => {
-    console.log('----- Playing audio:', d);
-    if (!hasAudioInteraction) return;  // Change this line
-    if (!audioContextRef.current || audioContextRef.current.state === 'suspended') {
-      console.log('Audio context not ready');
-      return;
-    }
-    if (currentPlayingNodeRef.current === d) return;
+  // Memoize playAudioWithFade
+  const playAudioWithFade = useCallback(async (d) => {
+    if (!hasAudioInteraction || !audioManagerRef.current) return;
 
     try {
       const fileName = `${d.data.id}-${d.data.duration}_${d.data.noteDelta}_${d.data.velocity}.wav`;
       const audioUrl = `${LINEAGE_SOUNDS_BUCKET_HOST}/${experiment}/${evoRunId}/${fileName}`;
       
-      console.log('Attempting to play:', audioUrl);
-
-      const response = await fetch(audioUrl);
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+      const result = await audioManagerRef.current.playSound(audioUrl, { 
+        i: d.data.id, 
+        j: d.data.id
+      });
+      
+      if (result) {
+        requestAnimationFrame(redrawNodes);
+        const voice = audioManagerRef.current.voices.get(result.voiceId);
+        if (voice?.source) {
+          voice.source.onended = () => requestAnimationFrame(redrawNodes);
+        }
       }
-      const arrayBuffer = await response.arrayBuffer();
-      const audioBuffer = await audioContextRef.current.decodeAudioData(arrayBuffer);
-
-      if (currentSourceRef.current) {
-        await stopAudioWithFade();
-      }
-
-      // Create and configure audio nodes
-      currentSourceRef.current = audioContextRef.current.createBufferSource();
-      currentSourceRef.current.buffer = audioBuffer;
-      currentSourceRef.current.loop = false;
-
-      currentGainNodeRef.current = audioContextRef.current.createGain();
-      currentGainNodeRef.current.gain.setValueAtTime(0, audioContextRef.current.currentTime);
-      currentGainNodeRef.current.gain.linearRampToValueAtTime(
-        BASE_VOLUME, 
-        audioContextRef.current.currentTime + FADE_TIME
-      );
-
-      // Connect nodes
-      currentSourceRef.current.connect(currentGainNodeRef.current);
-      currentGainNodeRef.current.connect(zoomGainNodeRef.current);
-
-      currentSourceRef.current.start();
-      currentPlayingNodeRef.current = d;
-
-      currentSourceRef.current.onended = () => {
-        stopAudioWithFade();
-      };
     } catch (error) {
       console.error('Error playing audio:', error);
-      console.error('Failed URL:', audioUrl);
-      currentPlayingNodeRef.current = null;
+      requestAnimationFrame(redrawNodes);
+    }
+  }, [experiment, evoRunId, hasAudioInteraction, redrawNodes]);
+
+  // Remove stopAudioWithFade with cleanup using AudioManager
+  const stopAudioWithFade = async () => {
+    if (audioManagerRef.current) {
+      audioManagerRef.current.cleanup();
+      currentlyPlayingNodeRef.current = null;
+      requestAnimationFrame(redrawNodes); // Update to use redrawNodes
     }
   };
 
-  const stopAudioWithFade = async () => {
-    if (!currentGainNodeRef.current || !currentSourceRef.current) return;
-
-    const stopTime = audioContextRef.current.currentTime + FADE_TIME;
-    currentGainNodeRef.current.gain.setValueAtTime(currentGainNodeRef.current.gain.value, audioContextRef.current.currentTime);
-    currentGainNodeRef.current.gain.exponentialRampToValueAtTime(0.0001, stopTime);
-
-    return new Promise(resolve => {
-      setTimeout(() => {
-        if (currentSourceRef.current) {
-          currentSourceRef.current.stop();
-          currentSourceRef.current.disconnect();
-          currentSourceRef.current = null;
-        }
-        if (currentGainNodeRef.current) {
-          currentGainNodeRef.current.disconnect();
-          currentGainNodeRef.current = null;
-        }
-        currentPlayingNodeRef.current = null;
-        resolve();
-      }, FADE_TIME * 1000);
-    });
-  };
-
-  // // Single effect for reverb management
-  // useEffect(() => {
-  //   if (!wetGainNodeRef.current || !dryGainNodeRef.current || !audioContextRef.current) return;
-    
-  //   console.log('Updating reverb mix:', reverbAmount);
-  //   const wetAmount = reverbAmount / 100;
-  //   wetGainNodeRef.current.gain.setValueAtTime(wetAmount, audioContextRef.current.currentTime);
-  //   dryGainNodeRef.current.gain.setValueAtTime(1 - wetAmount, audioContextRef.current.currentTime);
-  // }, [reverbAmount]);
-
-
-  const updateReverbMix = useCallback(() => {
-    if (!wetGainNodeRef.current || !dryGainNodeRef.current || !audioContextRef.current) return;
-    
-    const wetAmount = reverbAmount / 100;
-    requestAnimationFrame(() => {
-      wetGainNodeRef.current.gain.setValueAtTime(wetAmount, audioContextRef.current.currentTime);
-      dryGainNodeRef.current.gain.setValueAtTime(1 - wetAmount, audioContextRef.current.currentTime);
-    });
-  }, [reverbAmount]);
-  
-  // Update whenever reverbAmount changes
+  // Add cleanup on unmount
   useEffect(() => {
-    updateReverbMix();
-  }, [reverbAmount, updateReverbMix]);
-  
+    return () => {
+      if (audioManagerRef.current) {
+        audioManagerRef.current.cleanup();
+      }
+      activeNodesRef.current.clear();
+    };
+  }, []);
+
+  // Update reverb mix when reverbAmount changes
+  useEffect(() => {
+    if (audioManagerRef.current) {
+      audioManagerRef.current.setReverbMix(reverbAmount);
+    }
+  }, [reverbAmount]);
+
   // Slider handler
   const handleReverbChange = useCallback((e) => {
     setReverbAmount(Number(e.target.value));
@@ -233,6 +158,20 @@ const PhylogeneticViewer = ({
     updateSearch(e.target.value);
   }, [updateSearch]);
 
+  // Simplify handleNodeMouseOver
+  const handleNodeMouseOver = useCallback((event, d) => {
+    setTooltip({
+      show: true,
+      content: `ID: ${d.data.name || d.data.id}<br/>Score: ${d.data.s ? d.data.s.toFixed(3) : 'N/A'}<br/>Generation: ${d.data.gN || 'N/A'}`,
+      x: event.pageX,
+      y: event.pageY
+    });
+
+    if (hasAudioInteraction && !silentMode) {
+      playAudioWithFade(d);
+    }
+  }, [hasAudioInteraction, silentMode, playAudioWithFade]);
+
   // Initialize D3 visualization
   useEffect(() => {
     if (!containerRef.current || !treeData) return;
@@ -240,8 +179,6 @@ const PhylogeneticViewer = ({
     // Clear existing content and reset initialization flag
     d3.select(containerRef.current).selectAll("*").remove();
     treeInitializedRef.current = false;
-
-    console.log("Initializing D3 vis, hasAudioInteraction:", hasAudioInteraction);
 
     // Process the tree based on context switches setting
     const simplifiedRoot = measureContextSwitches ? 
@@ -312,32 +249,14 @@ const PhylogeneticViewer = ({
       .attr("class", "node")
       .attr("transform", d => `rotate(${d.x * 180 / Math.PI - 90}) translate(${d.y},0)`);
 
-      const circles = node.append("circle")
+    const circles = node.append("circle")
       .attr("fill", d => d.data.s ? d3.interpolateViridis(d.data.s) : "#999")
       .attr("r", nodeRadius)
       .attr("class", "node-circle")
-      .on("mouseover", function(event, d) {
-        d3.select(this).attr("fill", "#ff0000");
-        console.log("d.data", d.data);
-        setTooltip({
-          show: true,
-          content: `ID: ${d.data.name || d.data.id}<br/>Score: ${d.data.s ? d.data.s.toFixed(3) : 'N/A'}<br/>Generation: ${d.data.gN || 'N/A'}`,
-          x: event.pageX,
-          y: event.pageY
-        });
-  
-        if (hasAudioInteraction && audioContextRef.current) {
-          playAudioWithFade(d);
-        }
-      })
+      .on("mouseover", handleNodeMouseOver)  // Use the memoized callback
       .on("mouseout", function(event, d) {
-        d3.select(this).attr("fill", d.data.s ? d3.interpolateViridis(d.data.s) : "#999");
-        
         setTooltip({ show: false, content: '', x: 0, y: 0 });
-  
-        if (hasAudioInteraction) {
-          stopAudioWithFade();
-        }
+        // Remove color update on mouseout since it's handled by redrawNodes
       })
       .on("dblclick", (event, d) => {
         event.preventDefault();
@@ -430,26 +349,29 @@ const PhylogeneticViewer = ({
     // Cleanup
     return () => {
       window.removeEventListener('resize', handleResize);
-      if (currentSourceRef.current) {
-        currentSourceRef.current.stop();
-        currentSourceRef.current.disconnect();
-      }
+      // Remove the old audio cleanup since we're using AudioManager now
+      audioManagerRef.current?.cleanup();
     };
-  }, [treeData, experiment, evoRunId, measureContextSwitches, hasAudioInteraction]);
+  }, [treeData, experiment, evoRunId, measureContextSwitches, hasAudioInteraction, handleNodeMouseOver]); // Remove silentMode
 
+  // Add periodic redraw to catch any missed state changes
   useEffect(() => {
-    if (hasAudioInteraction && audioContextRef.current?.state === 'suspended') {
-      audioContextRef.current.resume().catch(console.error);
-    }
-  }, [hasAudioInteraction]);
-  
+    const interval = setInterval(() => {
+      if (audioManagerRef.current) {
+        redrawNodes();
+      }
+    }, 100); // Check every 100ms
+
+    return () => clearInterval(interval);
+  }, [redrawNodes]);
+
   // Update click handler
   const handleClick = async (e) => {
     e.stopPropagation();
     console.log('PhylogeneticViewer click, before:', hasAudioInteraction);
     if (!hasAudioInteraction) {
       try {
-        await audioContextRef.current.resume();
+        await audioManagerRef.current?.resume();
         onAudioInteraction();  // Just call the prop function
         console.log('PhylogeneticViewer click, after audio init');
       } catch (error) {
@@ -495,6 +417,23 @@ const PhylogeneticViewer = ({
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
+  }, []);
+
+  // Add key handler for Alt key
+  useEffect(() => {
+    const handleKeyPress = (e) => {
+      if (e.key === 'Alt') {
+        setSilentMode(e.type === 'keydown');
+      }
+    };
+  
+    window.addEventListener('keydown', handleKeyPress);
+    window.addEventListener('keyup', handleKeyPress);
+  
+    return () => {
+      window.removeEventListener('keydown', handleKeyPress);
+      window.removeEventListener('keyup', handleKeyPress);
+    };
   }, []);
 
   return (
@@ -555,7 +494,7 @@ const PhylogeneticViewer = ({
             {/* Theme Toggle */}
             <div className="space-y-2">
               <label className="text-sm font-medium">Appearance</label>
-              <label className="flex items-center gap-2 text-sm cursor-pointer">
+              <label class="flex items-center gap-2 text-sm cursor-pointer">
                 <input
                   type="checkbox"
                   checked={theme === 'light'}
@@ -565,6 +504,39 @@ const PhylogeneticViewer = ({
                     : 'bg-gray-800 border-gray-700'}`}
                 />
                 Light theme
+              </label>
+            </div>
+
+            {/* Add Polyphony Control */}
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Polyphony (Max Voices)</label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="range"
+                  className="flex-1 h-2"
+                  min="1"
+                  max="8"
+                  step="1"
+                  value={maxVoices}
+                  onChange={(e) => setMaxVoices(Number(e.target.value))}
+                />
+                <span className="text-sm w-8">{maxVoices}</span>
+              </div>
+            </div>
+
+            {/* Add Silent Mode Control */}
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Navigation Mode</label>
+              <label className="flex items-center gap-2 text-sm cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={silentMode}
+                  onChange={(e) => setSilentMode(e.target.checked)}
+                  className={`rounded ${theme === 'light' 
+                    ? 'bg-white border-gray-300' 
+                    : 'bg-gray-800 border-gray-700'}`}
+                />
+                Silent mode (or hold Alt key)
               </label>
             </div>
           </div>
@@ -591,8 +563,13 @@ const PhylogeneticViewer = ({
           />
         )}
 
-        <div className="absolute bottom-2 left-2 text-white/70 text-xs">
-          Hover: play sound • Double-click: download
+        <div className="absolute bottom-2 left-2 text-white/70 text-xs flex items-center gap-2">
+          <span>Hover: {silentMode ? 'navigation only' : 'play sound'} • Double-click: download</span>
+          {silentMode && (
+            <span className="px-1.5 py-0.5 bg-gray-800/80 rounded text-xs">
+              Silent Mode
+            </span>
+          )}
         </div>
 
         {!hasAudioInteraction && (
