@@ -34,12 +34,12 @@ const PhylogeneticViewer = ({
   const currentZoomTransformRef = useRef(null);
 
   const rendererRef = useRef(null);
-  const coreRef = useRef(null);
 
   const [rendererReady, setRendererReady] = useState(false);
   const contextRef = useRef(null);
 
   const activeVoicesRef = useRef(new Map()); // Track active voices
+  const triggerSourceRef = useRef(null);
 
   // Replace audio refs with AudioManager
   const audioManagerRef = useRef(null);
@@ -254,43 +254,39 @@ const PhylogeneticViewer = ({
       const audioUrl = `${LINEAGE_SOUNDS_BUCKET_HOST}/${experiment}/${evoRunId}/${fileName}`;
   
       try {
-        // Keep rendering current voices while loading
-        const currentVoices = Array.from(activeVoicesRef.current.values());
-        if (currentVoices.length > 0) {
-          const currentMix = currentVoices.length > 1 ? el.add(...currentVoices) : currentVoices[0];
-          await rendererRef.current.render(currentMix, currentMix);
-        }
-  
-        // Load sound file
         const response = await fetch(audioUrl);
         const arrayBuffer = await response.arrayBuffer();
         const audioData = await rendererRef.current.context.decodeAudioData(arrayBuffer);
         
-        // Create virtual file system key and load audio data
         const vfsKey = `sound-${d.data.id}`;
         await rendererRef.current.updateVirtualFileSystem({
           [vfsKey]: audioData.getChannelData(0)
         });
   
-        const triggerRate = 1 / audioData.duration;
+        // Create or reuse shared trigger
+        if (!triggerSourceRef.current) {
+          triggerSourceRef.current = el.train(
+            el.const({ key: 'shared-rate', value: 1 / audioData.duration })
+          );
+        }
   
-        // Create new voice with ADSR envelope
+        // Create new voice using shared trigger
         const newVoice = el.mul(
           el.mul(
             el.sample(
-              { path: vfsKey, mode: 'trigger' }, 
-              el.train(triggerRate),
-              1
+              { path: vfsKey, mode: 'trigger', key: `sample-${d.data.id}` }, 
+              triggerSourceRef.current,  // Use shared trigger
+              el.const({ key: `playback-rate-${d.data.id}`, value: 1 })
             ),
             el.adsr(
-              0.01,  // Attack: 10ms
-              0.1,   // Decay: 100ms
-              0.7,   // Sustain level: 70%
-              0.3,   // Release: 300ms
-              el.train(triggerRate) // Use same trigger as sample
+              0.01,
+              0.1,
+              0.7,
+              0.3,
+              triggerSourceRef.current  // Use same shared trigger
             )
           ),
-          1 / maxVoices
+          el.const({ key: `voice-gain-${d.data.id}`, value: 1 / maxVoices })
         );
   
         // Manage voice collection
@@ -300,26 +296,28 @@ const PhylogeneticViewer = ({
         }
         activeVoicesRef.current.set(d.data.id, newVoice);
   
-        // Mix all voices including the new one
+        // Mix all active voices
         const voices = Array.from(activeVoicesRef.current.values());
         let mix = voices.length > 1 ? el.add(...voices) : voices[0];
   
         // Add reverb if enabled
         if (reverbAmount > 0) {
           const reverbSignal = el.mul(
-            el.convolve({ path: 'reverb-ir' }, mix),
-            reverbAmount / 100 * 0.3
+            el.convolve({ path: 'reverb-ir', key: `reverb-${d.data.id}` }, mix),
+            el.const({ key: `wet-gain-${d.data.id}`, value: reverbAmount / 100 * 0.3 })
           );
-          const drySignal = el.mul(mix, 1 - (reverbAmount / 100));
+          const drySignal = el.mul(
+            mix, 
+            el.const({ key: `dry-gain-${d.data.id}`, value: 1 - (reverbAmount / 100) })
+          );
           mix = el.mul(
             el.add(drySignal, reverbSignal),
-            0.7
+            el.const({ key: `master-gain-${d.data.id}`, value: 0.7 })
           );
         }
   
         await rendererRef.current.render(mix, mix);
         requestAnimationFrame(redrawNodes);
-  
       } catch (error) {
         console.error('Error playing sound:', error);
       }
