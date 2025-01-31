@@ -1,14 +1,35 @@
-import { Volume2 } from 'lucide-react';
+import { Volume2, Plus } from 'lucide-react';
+import { useState } from 'react';
+import { UNIT_TYPES } from '../App';
+
+const UnitTypeSelector = ({ onSelect, onClose }) => (
+  <div className="absolute bottom-12 left-0 right-0 mx-2 bg-gray-800 rounded-sm shadow-lg overflow-hidden">
+    {Object.values(UNIT_TYPES).map(type => (
+      <button
+        key={type}
+        onClick={() => {
+          onSelect(type);
+          onClose();
+        }}
+        className="w-full p-2 text-left text-sm text-gray-300 hover:bg-gray-700 hover:text-white transition-colors"
+      >
+        {type}
+      </button>
+    ))}
+  </div>
+);
 
 const UnitsPanel = ({ units, onAddUnit, onRemoveUnit, onToggleState, onUpdateVolume, onSelectUnit, selectedUnitId }) => {
+  const [showTypeSelector, setShowTypeSelector] = useState(false);
+
   return (
-    <div className="w-64 bg-gray-900/95 backdrop-blur border-r border-gray-800">
-      <div className="p-2 flex flex-col gap-2">
+    <div className="h-fit bg-gray-900/95 backdrop-blur border-r border-gray-800">
+      <div className="p-2 flex flex-col gap-2 min-w-[16rem]">
         {units.map(unit => (
           <div 
             key={unit.id}
             onClick={() => onSelectUnit(unit.id)}
-            className={`bg-gray-800/50 rounded-sm p-2 cursor-pointer select-none
+            className={`bg-gray-800/50 rounded-sm p-2 cursor-pointer select-none transition-all
               ${selectedUnitId === unit.id ? 'ring-1 ring-blue-500' : ''}`}
           >
             {/* All controls in a non-interactive div by default */}
@@ -86,12 +107,22 @@ const UnitsPanel = ({ units, onAddUnit, onRemoveUnit, onToggleState, onUpdateVol
           </div>
         ))}
         
-        <button
-          onClick={onAddUnit}
-          className="w-full p-1.5 rounded-sm bg-gray-800/50 hover:bg-gray-700 text-gray-400 hover:text-white transition-colors flex items-center justify-center gap-1 text-sm"
-        >
-          + Add Unit
-        </button>
+        <div className="relative">
+          <button
+            onClick={() => setShowTypeSelector(!showTypeSelector)}
+            className="w-full p-1.5 rounded-sm bg-gray-800/50 hover:bg-gray-700 text-gray-400 hover:text-white transition-colors flex items-center justify-center gap-1 text-sm"
+          >
+            <Plus size={14} />
+            Add Unit
+          </button>
+          
+          {showTypeSelector && (
+            <UnitTypeSelector 
+              onSelect={onAddUnit}
+              onClose={() => setShowTypeSelector(false)}
+            />
+          )}
+        </div>
       </div>
     </div>
   );

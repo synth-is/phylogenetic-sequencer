@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { X, Code, Play, Square, RefreshCw, Bug } from 'lucide-react';
+import { X, Code, Play, Square, RefreshCw, Bug, ChevronUp, ChevronDown } from 'lucide-react';
 import StrudelEditor from './StrudelEditor';
 import ChuckEditor from './ChuckEditor';
 import { DEFAULT_STRUDEL_CODE } from '../constants';
@@ -54,6 +54,7 @@ const UnitConfigPanel = ({ unit, units, onClose, onUpdateUnit }) => {
   const [activeTab, setActiveTab] = useState('Unit');
   const [liveCodeEngine, setLiveCodeEngine] = useState(unit.liveCodeEngine || 'Strudel');
   const editorRef = useRef(null);
+  const [isCollapsed, setIsCollapsed] = useState(false);
   
   const {
     debugLog,
@@ -132,14 +133,20 @@ const UnitConfigPanel = ({ unit, units, onClose, onUpdateUnit }) => {
   }, [unit.id]);
 
   return (
-    <div className="w-1/3 bg-gray-900/95 backdrop-blur border-l border-gray-800">
-      <div className="flex items-center border-b border-gray-800">
-        <div className="flex-1 flex">
+    <div className="fixed right-4 top-16 z-50 bg-gray-900/95 backdrop-blur border border-gray-800 rounded-lg shadow-xl w-80">
+      <div className="flex items-center border-b border-gray-800 p-2">
+        <div className="flex-1 flex items-center gap-2">
+          <button
+            onClick={() => setIsCollapsed(!isCollapsed)}
+            className="p-1.5 rounded-sm hover:bg-gray-800 text-gray-400 hover:text-white"
+          >
+            {isCollapsed ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
+          </button>
           {['Unit', 'Sampler', 'Live Code'].map(tab => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
-              className={`px-4 py-2 text-sm ${activeTab === tab 
+              className={`px-3 py-1 text-sm rounded-sm ${activeTab === tab 
                 ? 'bg-blue-900/30 text-white' 
                 : 'text-gray-400 hover:text-white'}`}
             >
@@ -149,253 +156,228 @@ const UnitConfigPanel = ({ unit, units, onClose, onUpdateUnit }) => {
         </div>
         <button
           onClick={onClose}
-          className="p-2 text-gray-400 hover:text-white"
+          className="p-1.5 rounded-sm hover:bg-gray-800 text-gray-400 hover:text-white ml-2"
         >
           <X size={16} />
         </button>
       </div>
 
-      {/* Content area */}
-      <div className="p-4">
-        {activeTab === 'Unit' && (
-          <>
-            <CollapsibleSection title="Sequence">
-              <Slider 
-                label="Speed" 
-                value={unit.speed || 0} 
-                onChange={val => handleValueChange('speed', val)} 
-                min={-2} 
-                max={2} 
-                centered={true}
-              />
-            </CollapsibleSection>
-            
-            <CollapsibleSection title="Evolution">
-              <Slider 
-                label="Grow" 
-                value={unit.grow || 0} 
-                onChange={val => handleValueChange('grow', val)} 
-              />
-              <Slider 
-                label="Shrink" 
-                value={unit.shrink || 0} 
-                onChange={val => handleValueChange('shrink', val)} 
-              />
-              <Slider 
-                label="Mutate" 
-                value={unit.mutate || 0} 
-                onChange={val => handleValueChange('mutate', val)} 
-              />
-              <Slider 
-                label="Prob. New Tree" 
-                value={unit.probNewTree || 0} 
-                onChange={val => handleValueChange('probNewTree', val)} 
-              />
-            </CollapsibleSection>
-          </>
-        )}
-
-        {activeTab === 'Sampler' && (
-          <>
-            <CollapsibleSection title="Sample">
-              <Slider 
-                label="Pitch" 
-                value={unit.pitch || 0} 
-                onChange={val => handleValueChange('pitch', val)} 
-                min={-12} 
-                max={12} 
-                centered={true}
-              />
-              <Slider 
-                label="Start" 
-                value={unit.start || 0} 
-                onChange={val => handleValueChange('start', val)} 
-              />
-            </CollapsibleSection>
-
-            <CollapsibleSection title="Envelope">
-              <Slider 
-                label="Attack" 
-                value={unit.attack || 0} 
-                onChange={val => handleValueChange('attack', val)} 
-              />
-              <Slider 
-                label="Decay" 
-                value={unit.decay || 0} 
-                onChange={val => handleValueChange('decay', val)} 
-              />
-              <Slider 
-                label="Sustain" 
-                value={unit.sustain || 0} 
-                onChange={val => handleValueChange('sustain', val)} 
-              />
-              <Slider 
-                label="Release" 
-                value={unit.release || 0} 
-                onChange={val => handleValueChange('release', val)} 
-              />
-            </CollapsibleSection>
-
-            <CollapsibleSection title="Effects">
-              <Slider 
-                label="Filter" 
-                value={unit.filter || 0} 
-                onChange={val => handleValueChange('filter', val)} 
-              />
-              <Slider 
-                label="Delay" 
-                value={unit.delay || 0} 
-                onChange={val => handleValueChange('delay', val)} 
-              />
-              <Slider 
-                label="Reverb" 
-                value={unit.reverb || 0} 
-                onChange={val => handleValueChange('reverb', val)} 
-              />
-            </CollapsibleSection>
-          </>
-        )}
-
-        {activeTab === 'Live Code' && (
-          <div className="space-y-4">
-            <div className="flex gap-1 p-1 bg-gray-800 rounded">
-              <button
-                onClick={() => handleEngineChange('Strudel')}
-                className={`flex-1 px-2 py-1 rounded text-xs ${
-                  liveCodeEngine === 'Strudel'
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-gray-700 text-gray-400 hover:text-white'
-                }`}
-              >
-                Strudel
-              </button>
-              <button
-                onClick={() => handleEngineChange('ChucK')}
-                className={`flex-1 px-2 py-1 rounded text-xs ${
-                  liveCodeEngine === 'ChucK'
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-gray-700 text-gray-400 hover:text-white'
-                }`}
-              >
-                ChucK
-              </button>
-            </div>
-
-            <div className="flex items-center gap-2 p-2 bg-gray-800/50 rounded">
-              <button
-                onClick={handleApplyChanges}
-                className="px-3 py-1.5 bg-blue-600 text-white rounded-sm flex items-center gap-1 text-xs"
-              >
-                <RefreshCw size={12} />
-                Apply Changes
-              </button>
-              
-              <button
-                onClick={testPatternUpdate}
-                className="px-3 py-1.5 bg-purple-600 text-white rounded-sm flex items-center gap-1 text-xs"
-              >
-                <Code size={12} />
-                Test Update
-              </button>
-
-              <button
-                onClick={() => setShowDebugger(!showDebugger)}
-                className="px-3 py-1.5 bg-amber-600 text-white rounded-sm flex items-center gap-1 text-xs"
-              >
-                <Bug size={12} />
-                {showDebugger ? 'Hide Debug' : 'Show Debug'}
-              </button>
-
-              <div className="flex-1" />
-
-              <button
-                onClick={handlePlay}
-                className="p-1.5 bg-green-600 text-white rounded-sm"
-              >
-                <Play size={14} />
-              </button>
-              
-              <button
-                onClick={handleStop}
-                className="p-1.5 bg-red-600 text-white rounded-sm"
-              >
-                <Square size={14} />
-              </button>
-            </div>
-
-            {showDebugger && (
-              <div className="p-2 bg-gray-800/50 rounded space-y-2">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-sm text-white font-medium">Pattern Debug Log</h3>
-                  <button
-                    onClick={clearDebugLog}
-                    className="text-xs text-gray-400 hover:text-white"
-                  >
-                    Clear Log
-                  </button>
-                </div>
-                <div className="space-y-1 max-h-40 overflow-y-auto text-xs">
-                  {debugLog.map((entry, i) => (
-                    <div
-                      key={i}
-                      className={`p-1 rounded ${
-                        entry.unitId === unit.id 
-                          ? 'bg-blue-900/30 text-blue-200' 
-                          : 'bg-gray-800/50 text-gray-400'
-                      }`}
-                    >
-                      <span className="text-gray-500">{entry.timestamp.split('T')[1].split('.')[0]}</span>
-                      {' - '}
-                      <span className="text-gray-400">Unit {entry.unitId}:</span>
-                      {' '}
-                      {entry.message}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            <div className="relative flex-1" style={{ minHeight: '300px' }}>
-              {liveCodeEngine === 'Strudel' ? (
-                <StrudelEditor
-                  key={unit.id}
-                  unitId={unit.id}
-                  initialCode={unit.strudelCode || DEFAULT_STRUDEL_CODE}
-                  onCodeChange={handleCodeChange}
-                  onEditorReady={handleEditorReady}
+      <div className={`overflow-hidden transition-all duration-200 ${isCollapsed ? 'max-h-0' : 'max-h-[calc(100vh-8rem)]'}`}>
+        <div className="p-4 overflow-y-auto">
+          {activeTab === 'Unit' && (
+            <>
+              <CollapsibleSection title="Sequence">
+                <Slider 
+                  label="Speed" 
+                  value={unit.speed || 0} 
+                  onChange={val => handleValueChange('speed', val)} 
+                  min={-2} 
+                  max={2} 
+                  centered={true}
                 />
-              ) : (
-                <ChuckEditor />
+              </CollapsibleSection>
+              
+              <CollapsibleSection title="Evolution">
+                <Slider 
+                  label="Grow" 
+                  value={unit.grow || 0} 
+                  onChange={val => handleValueChange('grow', val)} 
+                />
+                <Slider 
+                  label="Shrink" 
+                  value={unit.shrink || 0} 
+                  onChange={val => handleValueChange('shrink', val)} 
+                />
+                <Slider 
+                  label="Mutate" 
+                  value={unit.mutate || 0} 
+                  onChange={val => handleValueChange('mutate', val)} 
+                />
+                <Slider 
+                  label="Prob. New Tree" 
+                  value={unit.probNewTree || 0} 
+                  onChange={val => handleValueChange('probNewTree', val)} 
+                />
+              </CollapsibleSection>
+            </>
+          )}
+
+          {activeTab === 'Sampler' && (
+            <>
+              <CollapsibleSection title="Sample">
+                <Slider 
+                  label="Pitch" 
+                  value={unit.pitch || 0} 
+                  onChange={val => handleValueChange('pitch', val)} 
+                  min={-12} 
+                  max={12} 
+                  centered={true}
+                />
+                <Slider 
+                  label="Start" 
+                  value={unit.start || 0} 
+                  onChange={val => handleValueChange('start', val)} 
+                />
+              </CollapsibleSection>
+
+              <CollapsibleSection title="Envelope">
+                <Slider 
+                  label="Attack" 
+                  value={unit.attack || 0} 
+                  onChange={val => handleValueChange('attack', val)} 
+                />
+                <Slider 
+                  label="Decay" 
+                  value={unit.decay || 0} 
+                  onChange={val => handleValueChange('decay', val)} 
+                />
+                <Slider 
+                  label="Sustain" 
+                  value={unit.sustain || 0} 
+                  onChange={val => handleValueChange('sustain', val)} 
+                />
+                <Slider 
+                  label="Release" 
+                  value={unit.release || 0} 
+                  onChange={val => handleValueChange('release', val)} 
+                />
+              </CollapsibleSection>
+
+              <CollapsibleSection title="Effects">
+                <Slider 
+                  label="Filter" 
+                  value={unit.filter || 0} 
+                  onChange={val => handleValueChange('filter', val)} 
+                />
+                <Slider 
+                  label="Delay" 
+                  value={unit.delay || 0} 
+                  onChange={val => handleValueChange('delay', val)} 
+                />
+                <Slider 
+                  label="Reverb" 
+                  value={unit.reverb || 0} 
+                  onChange={val => handleValueChange('reverb', val)} 
+                />
+              </CollapsibleSection>
+            </>
+          )}
+
+          {activeTab === 'Live Code' && (
+            <div className="space-y-4">
+              <div className="flex gap-1 p-1 bg-gray-800 rounded">
+                <button
+                  onClick={() => handleEngineChange('Strudel')}
+                  className={`flex-1 px-2 py-1 rounded text-xs ${
+                    liveCodeEngine === 'Strudel'
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-gray-700 text-gray-400 hover:text-white'
+                  }`}
+                >
+                  Strudel
+                </button>
+                <button
+                  onClick={() => handleEngineChange('ChucK')}
+                  className={`flex-1 px-2 py-1 rounded text-xs ${
+                    liveCodeEngine === 'ChucK'
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-gray-700 text-gray-400 hover:text-white'
+                  }`}
+                >
+                  ChucK
+                </button>
+              </div>
+
+              <div className="flex items-center gap-2 p-2 bg-gray-800/50 rounded">
+                <button
+                  onClick={handleApplyChanges}
+                  className="px-3 py-1.5 bg-blue-600 text-white rounded-sm flex items-center gap-1 text-xs"
+                >
+                  <RefreshCw size={12} />
+                  Apply Changes
+                </button>
+                
+                <button
+                  onClick={testPatternUpdate}
+                  className="px-3 py-1.5 bg-purple-600 text-white rounded-sm flex items-center gap-1 text-xs"
+                >
+                  <Code size={12} />
+                  Test Update
+                </button>
+
+                <button
+                  onClick={() => setShowDebugger(!showDebugger)}
+                  className="px-3 py-1.5 bg-amber-600 text-white rounded-sm flex items-center gap-1 text-xs"
+                >
+                  <Bug size={12} />
+                  {showDebugger ? 'Hide Debug' : 'Show Debug'}
+                </button>
+
+                <div className="flex-1" />
+
+                <button
+                  onClick={handlePlay}
+                  className="p-1.5 bg-green-600 text-white rounded-sm"
+                >
+                  <Play size={14} />
+                </button>
+                
+                <button
+                  onClick={handleStop}
+                  className="p-1.5 bg-red-600 text-white rounded-sm"
+                >
+                  <Square size={14} />
+                </button>
+              </div>
+
+              {showDebugger && (
+                <div className="p-2 bg-gray-800/50 rounded space-y-2">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-sm text-white font-medium">Pattern Debug Log</h3>
+                    <button
+                      onClick={clearDebugLog}
+                      className="text-xs text-gray-400 hover:text-white"
+                    >
+                      Clear Log
+                    </button>
+                  </div>
+                  <div className="space-y-1 max-h-40 overflow-y-auto text-xs">
+                    {debugLog.map((entry, i) => (
+                      <div
+                        key={i}
+                        className={`p-1 rounded ${
+                          entry.unitId === unit.id 
+                            ? 'bg-blue-900/30 text-blue-200' 
+                            : 'bg-gray-800/50 text-gray-400'
+                        }`}
+                      >
+                        <span className="text-gray-500">{entry.timestamp.split('T')[1].split('.')[0]}</span>
+                        {' - '}
+                        <span className="text-gray-400">Unit {entry.unitId}:</span>
+                        {' '}
+                        {entry.message}
+                      </div>
+                    ))}
+                  </div>
+                </div>
               )}
+
+              <div className="relative flex-1" style={{ minHeight: '300px' }}>
+                {liveCodeEngine === 'Strudel' ? (
+                  <StrudelEditor
+                    key={unit.id}
+                    unitId={unit.id}
+                    initialCode={unit.strudelCode || DEFAULT_STRUDEL_CODE}
+                    onCodeChange={handleCodeChange}
+                    onEditorReady={handleEditorReady}
+                  />
+                ) : (
+                  <ChuckEditor />
+                )}
+              </div>
             </div>
-          </div>
-        )}
-
-        {activeTab === 'Unit' && (
-          <CollapsibleSection title="Sequence">
-            <Slider 
-              label="Speed" 
-              value={unit.speed || 0} 
-              onChange={val => handleValueChange('speed', val)} 
-              min={-2} 
-              max={2} 
-              centered={true}
-            />
-          </CollapsibleSection>
-        )}
-
-        {activeTab === 'Sampler' && (
-          <CollapsibleSection title="Sample">
-            <Slider 
-              label="Pitch" 
-              value={unit.pitch || 0} 
-              onChange={val => handleValueChange('pitch', val)} 
-              min={-12} 
-              max={12} 
-              centered={true}
-            />
-          </CollapsibleSection>
-        )}
+          )}
+        </div>
       </div>
     </div>
   );

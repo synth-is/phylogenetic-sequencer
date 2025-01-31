@@ -19,6 +19,41 @@ import StrudelReplTest from './components/StrudelReplTest';
 import { StrudelPatternProvider } from './components/strudelPatternContext';
 import { DEFAULT_STRUDEL_CODE, LINEAGE_SOUNDS_BUCKET_HOST } from './constants';
 
+// Add unit type definitions at the top of the file
+const UNIT_TYPES = {
+  TRAJECTORY: 'Trajectory',
+  SEQUENCE: 'Sequence',
+  LIVE_CODE: 'Live Code'
+};
+
+const DEFAULT_UNIT_CONFIGS = {
+  [UNIT_TYPES.TRAJECTORY]: {
+    speed: 1,
+    radius: 50,
+    direction: 'clockwise',
+    volume: -10,
+    active: true,
+    muted: false,
+    soloed: false
+  },
+  [UNIT_TYPES.SEQUENCE]: {
+    pattern: '1/4',
+    steps: 8,
+    volume: -10,
+    active: true,
+    muted: false,
+    soloed: false
+  },
+  [UNIT_TYPES.LIVE_CODE]: {
+    strudelCode: DEFAULT_STRUDEL_CODE,
+    liveCodeEngine: 'Strudel',
+    volume: -10,
+    active: true,
+    muted: false,
+    soloed: false
+  }
+};
+
 const TopBar = ({ 
   showUnits, 
   setShowUnits, 
@@ -102,9 +137,33 @@ function MainContent({ lineageTreesIndex, treeData, ...props }) {
         runs={runs}
         steps={steps}
       />
-      <div className="flex-1 flex">
+      <div className="flex-1 relative"> {/* Changed to relative */}
+        <div className="absolute inset-0">
+          {props.currentView === 'tree' ? (
+            <PhylogeneticViewer 
+              treeData={treeData}
+              experiment={props.selectedRun}
+              evoRunId={getEvoRunIdFromSelectedStep(lineageTreesIndex[props.selectedRun].all[props.selectedIndex])}
+              showSettings={props.showSettings}
+              setShowSettings={props.setShowSettings}
+              hasAudioInteraction={props.hasAudioInteraction}
+              onAudioInteraction={() => props.setHasAudioInteraction(true)}
+            />
+          ) : (
+            <HeatmapViewer 
+              showSettings={props.showSettings}
+              setShowSettings={props.setShowSettings}
+              experiment={props.selectedRun}
+              evoRunId={getEvoRunIdFromSelectedStep(lineageTreesIndex[props.selectedRun].all[props.selectedIndex])}
+              matrixUrl={getMatrixUrlFromTreePath(lineageTreesIndex[props.selectedRun].all[props.selectedIndex])}
+              hasAudioInteraction={props.hasAudioInteraction}
+              onAudioInteraction={() => props.setHasAudioInteraction(true)}
+            />
+          )}
+        </div>
+
         {props.showUnits && (
-          <>
+          <div className="fixed left-4 top-16 z-40"> {/* New floating container */}
             <UnitsPanel
               units={props.units.map(unit => ({
                 ...unit,
@@ -128,38 +187,14 @@ function MainContent({ lineageTreesIndex, treeData, ...props }) {
                 onPlaybackChange={props.handleUnitPlaybackChange}
               />
             )}
-          </>
+          </div>
         )}
-
-        <div className="flex-1 relative">
+        
+        <div className="fixed right-6 z-40" style={{ bottom: '9.5rem' }}>
           <ViewSwitcher 
             activeView={props.currentView}
             onViewChange={props.handleViewChange}
           />
-          
-          <div className="absolute inset-0">
-            {props.currentView === 'tree' ? (
-              <PhylogeneticViewer 
-                treeData={treeData}
-                experiment={props.selectedRun}
-                evoRunId={getEvoRunIdFromSelectedStep(lineageTreesIndex[props.selectedRun].all[props.selectedIndex])}
-                showSettings={props.showSettings}
-                setShowSettings={props.setShowSettings}
-                hasAudioInteraction={props.hasAudioInteraction}
-                onAudioInteraction={() => props.setHasAudioInteraction(true)}
-              />
-            ) : (
-              <HeatmapViewer 
-                showSettings={props.showSettings}
-                setShowSettings={props.setShowSettings}
-                experiment={props.selectedRun}
-                evoRunId={getEvoRunIdFromSelectedStep(lineageTreesIndex[props.selectedRun].all[props.selectedIndex])}
-                matrixUrl={getMatrixUrlFromTreePath(lineageTreesIndex[props.selectedRun].all[props.selectedIndex])}
-                hasAudioInteraction={props.hasAudioInteraction}
-                onAudioInteraction={() => props.setHasAudioInteraction(true)}
-              />
-            )}
-          </div>
         </div>
       </div>
     </div>
@@ -188,9 +223,13 @@ function MainApp() {
   const [treeData, setTreeData] = useState(null);
   const [lineageTreesIndex, setLineageTreesIndex] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
-  const [showUnits, setShowUnits] = useState(false);
-  const [selectedUnitId, setSelectedUnitId] = useState(null);
-  const [units, setUnits] = useState([]);
+  const [showUnits, setShowUnits] = useState(true);
+  const [selectedUnitId, setSelectedUnitId] = useState(1); // Default to first unit
+  const [units, setUnits] = useState(() => [{
+    id: 1,
+    type: UNIT_TYPES.TRAJECTORY,
+    ...DEFAULT_UNIT_CONFIGS[UNIT_TYPES.TRAJECTORY]
+  }]);
   const [playingUnits, setPlayingUnits] = useState(new Set());
 
   // Group all useRef calls together
@@ -296,31 +335,11 @@ function MainApp() {
     setSelectedUnitId(id === selectedUnitId ? null : id);
   };
 
-  const handleAddUnit = () => {
+  const handleAddUnit = (unitType) => {
     const newUnit = {
       id: units.length + 1,
-      type: 'Sequence Unit',
-      active: true,
-      muted: false,
-      soloed: false,
-      volume: -10,
-      isPlaying: false,
-      strudelCode: DEFAULT_STRUDEL_CODE,
-      liveCodeEngine: 'Strudel',
-      speed: 0,
-      grow: 0,
-      shrink: 0,
-      mutate: 0,
-      probNewTree: 0,
-      pitch: 0,
-      start: 0,
-      attack: 0,
-      decay: 0,
-      sustain: 0.5,
-      release: 0,
-      filter: 0,
-      delay: 0,
-      reverb: 0
+      type: unitType,
+      ...DEFAULT_UNIT_CONFIGS[unitType]
     };
     setUnits([...units, newUnit]);
   };
@@ -446,3 +465,4 @@ function getMatrixUrlFromTreePath(treePath) {
 }
 
 export default App;
+export { UNIT_TYPES };
