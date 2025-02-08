@@ -55,6 +55,26 @@ const PhylogeneticViewer = ({
     }
   }, [experiment, evoRunId, hasAudioInteraction, onCellHover]);
 
+  const handleNodeClick = useCallback((event, d) => {
+    if (hasAudioInteraction && onCellHover) {
+      // Send click event to stop looping sound
+      console.log('PhylogeneticViewer: node click, sending data to stop loop:', {
+        data: d.data,
+        experiment,
+        evoRunId
+      });
+      
+      onCellHover({
+        data: d.data,
+        experiment,
+        evoRunId,
+        config: {
+          stopLoop: true // Add flag to indicate click to stop loop
+        }
+      });
+    }
+  }, [experiment, evoRunId, hasAudioInteraction, onCellHover]);
+
   // Update node color based on selection
   const updateNodeColors = useCallback(() => {
     if (!gRef.current) return;
@@ -160,7 +180,8 @@ const PhylogeneticViewer = ({
         if (hasAudioInteraction) {  // Change this line
           downloadNodeSound(d);
         }
-      });
+      })
+      .on("click", handleNodeClick); // Add click handler
 
     treeInitializedRef.current = true;
 
@@ -246,7 +267,7 @@ const PhylogeneticViewer = ({
     return () => {
       window.removeEventListener('resize', handleResize);
     };
-  }, [treeData, experiment, evoRunId, measureContextSwitches, hasAudioInteraction, handleNodeMouseOver, updateNodeColors]);
+  }, [treeData, experiment, evoRunId, measureContextSwitches, hasAudioInteraction, handleNodeMouseOver, updateNodeColors, handleNodeClick]);
 
   // Add periodic color update
   useEffect(() => {

@@ -36,38 +36,6 @@ const UnitsPanel = ({
   const { handleCellHover, updateUnitConfig } = useUnits();
   const unitsRef = useRef(new Map());
 
-  // Handle cell hover events
-  useEffect(() => {
-    console.log('UnitsPanel received hover data:', onCellHover);
-  
-    if (!selectedUnitId || !onCellHover) {
-      console.log('UnitsPanel bail conditions:', {
-        noSelectedUnit: !selectedUnitId,
-        noHoverData: !onCellHover
-      });
-      return;
-    }
-  
-    const formattedData = CellDataFormatter.formatCellData(
-      onCellHover.data,
-      onCellHover.experiment,
-      onCellHover.evoRunId,
-      onCellHover.config
-    );
-  
-    console.log('UnitsPanel formatted data:', formattedData);
-    
-    if (formattedData) {
-      console.log('UnitsPanel forwarding to UnitsContext:', {
-        unitId: selectedUnitId,
-        formattedData
-      });
-      handleCellHover(selectedUnitId, formattedData).catch(err => 
-        console.error('Error in handleCellHover:', err)
-      );
-    }
-  }, [selectedUnitId, onCellHover, handleCellHover]);
-
   // Handle unit config updates
   useEffect(() => {
     units.forEach(unit => {
@@ -111,27 +79,26 @@ const UnitsPanel = ({
     });
   }, [units]);
 
-  // Handle cell hover events with formatted data
+  // Keep only ONE hover handler - This is the only useEffect we need for hover events
   useEffect(() => {
-    if (!selectedUnitId || !unitsRef.current.has(selectedUnitId) || !onCellHover) return;
-    
-    const trajectoryUnit = unitsRef.current.get(selectedUnitId);
-    console.log('UnitsPanel checking hover data:', { 
-      hasUnit: !!trajectoryUnit,
-      unitType: trajectoryUnit?.type,
-      hoverData: onCellHover
-    });
-    
-    if (trajectoryUnit && trajectoryUnit.type === UNIT_TYPES.TRAJECTORY && onCellHover) {
-      const formattedData = CellDataFormatter.formatCellData(
-        onCellHover.data,
-        onCellHover.experiment,
-        onCellHover.evoRunId,
-        onCellHover.config
-      );
-      
-      if (formattedData) {
-        console.log('UnitsPanel forwarding to TrajectoryUnit:', formattedData);
+    if (!selectedUnitId || !onCellHover) {
+      console.log('UnitsPanel bail conditions:', {
+        noSelectedUnit: !selectedUnitId,
+        noHoverData: !onCellHover
+      });
+      return;
+    }
+  
+    const formattedData = CellDataFormatter.formatCellData(
+      onCellHover.data,
+      onCellHover.experiment,
+      onCellHover.evoRunId,
+      onCellHover.config
+    );
+  
+    if (formattedData) {
+      const trajectoryUnit = unitsRef.current.get(selectedUnitId);
+      if (trajectoryUnit && trajectoryUnit.type === UNIT_TYPES.TRAJECTORY) {
         trajectoryUnit.handleCellHover(formattedData);
       }
     }

@@ -132,6 +132,13 @@ const UnitConfigPanel = ({ unit, units, onClose, onUpdateUnit }) => {
     };
   }, [unit.id]);
 
+  // Initialize playbackMode if not set
+  useEffect(() => {
+    if (unit && !unit.playbackMode) {
+      handleValueChange('playbackMode', 'one-off');
+    }
+  }, [unit]);
+
   return (
     <div className="fixed right-4 top-16 z-50 bg-gray-900/95 backdrop-blur border border-gray-800 rounded-lg shadow-xl w-80">
       <div className="flex items-center border-b border-gray-800 p-2">
@@ -166,6 +173,39 @@ const UnitConfigPanel = ({ unit, units, onClose, onUpdateUnit }) => {
         <div className="p-4 overflow-y-auto">
           {activeTab === 'Unit' && (
             <>
+              <CollapsibleSection title="Playback">
+                <div className="space-y-2">
+                  <label className="text-sm text-white">Mode</label>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => handleValueChange('playbackMode', 'one-off')}
+                      className={`flex-1 px-2 py-1 rounded text-xs ${
+                        (!unit.playbackMode || unit.playbackMode === 'one-off')  // Update condition here
+                          ? 'bg-blue-600 text-white'
+                          : 'bg-gray-700 text-gray-400'
+                      }`}
+                    >
+                      One-Off
+                    </button>
+                    <button
+                      onClick={() => handleValueChange('playbackMode', 'looping')}
+                      className={`flex-1 px-2 py-1 rounded text-xs ${
+                        unit.playbackMode === 'looping'
+                          ? 'bg-blue-600 text-white'
+                          : 'bg-gray-700 text-gray-400'
+                      }`}
+                    >
+                      Looping
+                    </button>
+                  </div>
+                  <p className="text-xs text-gray-400">
+                    {unit.playbackMode === 'looping' 
+                      ? 'Hover over nodes to loop sounds; hover again to stop the looping'
+                      : 'Hover nodes to play sounds once'}
+                  </p>
+                </div>
+              </CollapsibleSection>
+
               <CollapsibleSection title="Sequence">
                 <Slider 
                   label="Speed" 
