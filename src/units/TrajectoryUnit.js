@@ -47,6 +47,29 @@ export class TrajectoryUnit {
       
       this.renderer = core;
       this.context = context;
+
+      // Load impulse response for reverb
+      try {
+        const irResponse = await fetch('/WIDEHALL-1.wav');  // Updated path to match HeatmapViewer
+        if (!irResponse.ok) throw new Error(`HTTP error! status: ${irResponse.status}`);
+        const irArrayBuffer = await irResponse.arrayBuffer();
+        const irAudioBuffer = await this.context.decodeAudioData(irArrayBuffer);
+        
+        // Update VFS with impulse response
+        const vfsUpdate = {
+          'reverb-ir': irAudioBuffer.getChannelData(0)
+        };
+        await this.renderer.updateVirtualFileSystem(vfsUpdate);
+        console.log(`TrajectoryUnit ${this.id} loaded reverb IR successfully`);
+      } catch (irError) {
+        console.warn(`TrajectoryUnit ${this.id} failed to load reverb IR:`, irError);
+        // Create a minimal IR if loading fails
+        const minimalIR = new Float32Array(4096).fill(0);
+        minimalIR[0] = 1;
+        await this.renderer.updateVirtualFileSystem({
+          'reverb-ir': minimalIR
+        });
+      }
       
       console.log(`TrajectoryUnit ${this.id} initialized successfully`);
       return true;
@@ -91,30 +114,28 @@ export class TrajectoryUnit {
         const response = await fetch(audioUrl);
         if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
         const arrayBuffer = await response.arrayBuffer();
-        audioData = await this.renderer.context.decodeAudioData(arrayBuffer);
+        audioData = await this.context.decodeAudioData(arrayBuffer);
         this.audioDataCache.set(vfsKey, audioData);
       } else {
         audioData = this.audioDataCache.get(vfsKey);
       }
   
-      // Update VFS
+      // Ensure both sample and reverb IR are in VFS
       const vfsUpdate = {};
       vfsUpdate[vfsKey] = audioData.getChannelData(0);
       await this.renderer.updateVirtualFileSystem(vfsUpdate);
 
-      // Create trigger
+      // Create voice elements
       const triggerRate = 1 / audioData.duration;
-      const trigger = el.train(
-        el.const({ key: `rate-${genomeId}`, value: triggerRate })
-      );
+      const trigger = el.train(triggerRate);
 
       // Create voice with updated parameters
       const voice = el.mul(
         el.mul(
           el.sample(
-            { path: vfsKey, mode: 'trigger', key: `sample-${genomeId}` },
+            { path: vfsKey },
             trigger,
-            el.const({ key: `playback-rate-${genomeId}`, value: this.playbackRate })
+            el.const({ value: this.playbackRate })
           ),
           el.adsr(
             this.attackTime,
@@ -124,7 +145,7 @@ export class TrajectoryUnit {
             trigger
           )
         ),
-        el.const({ key: `voice-gain-${genomeId}`, value: 1 / this.maxVoices })
+        el.const({ value: 1 / this.maxVoices })
       );
 
       // Handle voice management based on mode
@@ -140,22 +161,23 @@ export class TrajectoryUnit {
       const voices = Array.from(this.activeVoices.values());
       let mix = voices.length > 1 ? el.add(...voices) : voices[0];
 
-      // Add reverb
+      // Add reverb if available
       if (this.reverbAmount > 0) {
         const reverbSignal = el.mul(
-          el.convolve({ path: 'reverb-ir', key: `reverb-${genomeId}` }, mix),
-          el.const({ key: `wet-gain-${genomeId}`, value: this.reverbAmount / 100 * this.reverbMix })
+          el.convolve({ path: 'reverb-ir' }, mix),
+          el.const({ value: this.reverbAmount / 100 * this.reverbMix })
         );
         const drySignal = el.mul(
           mix,
-          el.const({ key: `dry-gain-${genomeId}`, value: 1 - (this.reverbAmount / 100) })
+          el.const({ value: 1 - (this.reverbAmount / 100) })
         );
         mix = el.mul(
           el.add(drySignal, reverbSignal),
-          el.const({ key: `master-gain-${genomeId}`, value: Math.pow(10, this.volume / 20) })
+          el.const({ value: Math.pow(10, this.volume / 20) })
         );
       }
 
+      // Render final mix
       await this.renderer.render(mix, mix);
 
       // Set throttle timeout
