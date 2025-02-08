@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { Settings, Play } from 'lucide-react';
 import { 
   BrowserRouter as Router, 
@@ -17,42 +17,8 @@ import ViewSwitcher from './components/ViewSwitcher';
 import HeatmapViewer from './components/HeatmapViewer';
 import StrudelReplTest from './components/StrudelReplTest';
 import { StrudelPatternProvider } from './components/strudelPatternContext';
-import { DEFAULT_STRUDEL_CODE, LINEAGE_SOUNDS_BUCKET_HOST } from './constants';
-
-// Add unit type definitions at the top of the file
-const UNIT_TYPES = {
-  TRAJECTORY: 'Trajectory',
-  SEQUENCE: 'Sequence',
-  LIVE_CODE: 'Live Code'
-};
-
-const DEFAULT_UNIT_CONFIGS = {
-  [UNIT_TYPES.TRAJECTORY]: {
-    speed: 1,
-    radius: 50,
-    direction: 'clockwise',
-    volume: -10,
-    active: true,
-    muted: false,
-    soloed: false
-  },
-  [UNIT_TYPES.SEQUENCE]: {
-    pattern: '1/4',
-    steps: 8,
-    volume: -10,
-    active: true,
-    muted: false,
-    soloed: false
-  },
-  [UNIT_TYPES.LIVE_CODE]: {
-    strudelCode: DEFAULT_STRUDEL_CODE,
-    liveCodeEngine: 'Strudel',
-    volume: -10,
-    active: true,
-    muted: false,
-    soloed: false
-  }
-};
+import { DEFAULT_STRUDEL_CODE, LINEAGE_SOUNDS_BUCKET_HOST, UNIT_TYPES, DEFAULT_UNIT_CONFIGS } from './constants';
+import { UnitsProvider } from './UnitsContext';
 
 const TopBar = ({ 
   showUnits, 
@@ -113,7 +79,13 @@ const TopBar = ({
   </div>
 );
 
-function MainContent({ lineageTreesIndex, treeData, ...props }) {
+function MainContent({ 
+  lineageTreesIndex, 
+  treeData,
+  selectedUnitId,
+  handleCellHover,  // Changed from onCellHover
+  ...props 
+}) {
   if (!lineageTreesIndex || !treeData) {
     return <div className="fixed inset-0 bg-gray-950 flex items-center justify-center text-white">
       Loading...
@@ -125,19 +97,8 @@ function MainContent({ lineageTreesIndex, treeData, ...props }) {
 
   return (
     <div className="fixed inset-0 flex flex-col bg-gray-950">
-      <TopBar 
-        showUnits={props.showUnits}
-        setShowUnits={props.setShowUnits}
-        selectedRun={props.selectedRun}
-        handleRunChange={props.handleRunChange}
-        selectedIndex={props.selectedIndex}
-        handleIndexChange={props.handleIndexChange}
-        showSettings={props.showSettings}
-        setShowSettings={props.setShowSettings}
-        runs={runs}
-        steps={steps}
-      />
-      <div className="flex-1 relative"> {/* Changed to relative */}
+      <TopBar {...props} runs={runs} steps={steps} />
+      <div className="flex-1 relative">
         <div className="absolute inset-0">
           {props.currentView === 'tree' ? (
             <PhylogeneticViewer 
@@ -148,6 +109,7 @@ function MainContent({ lineageTreesIndex, treeData, ...props }) {
               setShowSettings={props.setShowSettings}
               hasAudioInteraction={props.hasAudioInteraction}
               onAudioInteraction={() => props.setHasAudioInteraction(true)}
+              onCellHover={handleCellHover}  // Pass the handler directly
             />
           ) : (
             <HeatmapViewer 
@@ -158,29 +120,28 @@ function MainContent({ lineageTreesIndex, treeData, ...props }) {
               matrixUrl={getMatrixUrlFromTreePath(lineageTreesIndex[props.selectedRun].all[props.selectedIndex])}
               hasAudioInteraction={props.hasAudioInteraction}
               onAudioInteraction={() => props.setHasAudioInteraction(true)}
+              onCellHover={handleCellHover}  // Pass the handler directly
             />
           )}
         </div>
 
         {props.showUnits && (
-          <div className="fixed left-4 top-16 z-40"> {/* New floating container */}
+          <div className="fixed left-4 top-16 z-40">
             <UnitsPanel
-              units={props.units.map(unit => ({
-                ...unit,
-                isPlaying: props.playingUnits.has(unit.id)
-              }))}
+              units={props.units}
               onPlaybackChange={props.handleUnitPlaybackChange}
-              selectedUnitId={props.selectedUnitId}
+              selectedUnitId={selectedUnitId}
               onSelectUnit={props.handleSelectUnit}
               onAddUnit={props.handleAddUnit}
               onRemoveUnit={props.handleRemoveUnit}
               onToggleState={props.handleToggleState}
               onUpdateVolume={props.handleUpdateVolume}
+              onCellHover={props.lastHoverData}  // Pass the actual hover data
             />
             
-            {props.selectedUnitId && (
+            {selectedUnitId && (
               <UnitConfigPanel
-                unit={props.units.find(u => u.id === props.selectedUnitId)}
+                unit={props.units.find(u => u.id === selectedUnitId)}
                 units={props.units}
                 onClose={() => props.handleSelectUnit(null)}
                 onUpdateUnit={props.handleUpdateUnit}
@@ -189,13 +150,6 @@ function MainContent({ lineageTreesIndex, treeData, ...props }) {
             )}
           </div>
         )}
-        
-        <div className="fixed right-6 z-40" style={{ bottom: '9.5rem' }}>
-          <ViewSwitcher 
-            activeView={props.currentView}
-            onViewChange={props.handleViewChange}
-          />
-        </div>
       </div>
     </div>
   );
@@ -225,6 +179,7 @@ function MainApp() {
   const [showSettings, setShowSettings] = useState(false);
   const [showUnits, setShowUnits] = useState(true);
   const [selectedUnitId, setSelectedUnitId] = useState(1); // Default to first unit
+  const [lastHoverData, setLastHoverData] = useState(null);  // Add this state
   const [units, setUnits] = useState(() => [{
     id: 1,
     type: UNIT_TYPES.TRAJECTORY,
@@ -235,6 +190,22 @@ function MainApp() {
   // Group all useRef calls together
   const fetchedTreesRef = useRef(new Set());
   const fetchedIndexRef = useRef(false);
+
+  const handleCellHover = useCallback((cellData) => {
+    if (selectedUnitId && showUnits) {
+      console.log('MainApp: cell hover received:', { selectedUnitId, cellData });
+      setLastHoverData(cellData);  // Store the hover data
+      setUnits(prevUnits => 
+        prevUnits.map(unit => 
+          unit.id === selectedUnitId 
+            ? { ...unit, lastHoverData: cellData }
+            : unit
+        )
+      );
+      return cellData;
+    }
+    return null;
+  }, [selectedUnitId, showUnits]);
 
   // Group all useEffect calls together
   useEffect(() => {
@@ -382,7 +353,6 @@ function MainApp() {
     );
   };
 
-  // ...existing handlers...
 
   return <MainContent 
     lineageTreesIndex={lineageTreesIndex}
@@ -401,7 +371,7 @@ function MainApp() {
     playingUnits={playingUnits}
     handleUnitPlaybackChange={handleUnitPlaybackChange}
     selectedUnitId={selectedUnitId}
-    handleSelectUnit={handleSelectUnit}
+    handleSelectUnit={setSelectedUnitId}
     handleAddUnit={handleAddUnit}
     handleRemoveUnit={handleRemoveUnit}
     handleToggleState={handleToggleState}
@@ -409,6 +379,8 @@ function MainApp() {
     handleUpdateUnit={handleUpdateUnit}
     hasAudioInteraction={hasAudioInteraction}
     setHasAudioInteraction={setHasAudioInteraction}
+    handleCellHover={handleCellHover}  // Pass the handler
+    lastHoverData={lastHoverData}  // Pass the stored data
   />;
 }
 
@@ -433,7 +405,9 @@ const router = createBrowserRouter(
 function App() {
   return (
     <StrudelPatternProvider>
-      <RouterProvider router={router} />
+      <UnitsProvider>
+        <RouterProvider router={router} />
+      </UnitsProvider>
     </StrudelPatternProvider>
   );
 }
@@ -465,4 +439,3 @@ function getMatrixUrlFromTreePath(treePath) {
 }
 
 export default App;
-export { UNIT_TYPES };

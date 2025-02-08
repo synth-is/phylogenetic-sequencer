@@ -102,7 +102,8 @@ const HeatmapViewer = ({
   evoRunId,
   matrixUrl,
   hasAudioInteraction,
-  onAudioInteraction
+  onAudioInteraction,
+  onCellHover
 }) => {
   // Add cache for audio files
   const audioBufferCacheRef = useRef(new Map());
@@ -565,8 +566,17 @@ const HeatmapViewer = ({
     // Check if within bounds and cell exists
     if (i >= 0 && i < matrix.length && j >= 0 && j < matrix[0].length && matrix[i][j]) {
       playSound(matrix[i][j], { i, j });
+      const cell = matrix[i][j];
+      if (onCellHover && cell.genomeId) {
+        onCellHover({
+          data: cell,
+          experiment,
+          evoRunId,
+          config: matrixData.evolutionRunConfig
+        });
+      }
     }
-  }, [matrixData, hasAudioInteraction, useSquareCells, playSound]);
+  }, [matrixData, hasAudioInteraction, useSquareCells, playSound, experiment, evoRunId, onCellHover]);
 
   // Update return statement to include mouse events
   return (

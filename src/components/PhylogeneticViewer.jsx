@@ -1,11 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Search, Settings, Download } from 'lucide-react';
 import * as d3 from 'd3';
-import {el} from '@elemaudio/core';
-import WebRenderer from '@elemaudio/web-renderer';
 import { pruneTreeForContextSwitches } from './phylogenetic-tree-common';
-import { LINEAGE_SOUNDS_BUCKET_HOST } from '../constants';
-import AudioManager from './AudioManager';
 
 const PhylogeneticViewer = ({ 
   treeData, 
@@ -14,315 +10,63 @@ const PhylogeneticViewer = ({
   showSettings, 
   setShowSettings,
   hasAudioInteraction,
-  onAudioInteraction 
+  onAudioInteraction,
+  onCellHover
 }) => {
-  // State declarations
   const [theme, setTheme] = useState('dark');
   const [measureContextSwitches, setMeasureContextSwitches] = useState(false);
-  const [reverbAmount, setReverbAmount] = useState(5);
   const [tooltip, setTooltip] = useState({ show: false, content: '', x: 0, y: 0 });
-  const [maxVoices, setMaxVoices] = useState(4);
-  const [silentMode, setSilentMode] = useState(false);
+  const [silentMode, setSilentMode] = useState(false); // Add silentMode state
 
-  // Refs
-  const searchTermRef = useRef('');  // Search ref instead of state
+  // Keep only view-related refs
+  const searchTermRef = useRef('');
   const containerRef = useRef(null);
   const svgRef = useRef(null);
   const gRef = useRef(null);
   const nodesRef = useRef(null);
   const linksRef = useRef(null);
   const currentZoomTransformRef = useRef(null);
+  const treeInitializedRef = useRef(false);
 
-  const rendererRef = useRef(null);
-
-  const [rendererReady, setRendererReady] = useState(false);
-  const contextRef = useRef(null);
-
-  const activeVoicesRef = useRef(new Map()); // Track active voices
-  const triggerSourceRef = useRef(null);
-
-  // Replace audio refs with AudioManager
-  const audioManagerRef = useRef(null);
-  const currentlyPlayingNodeRef = useRef(null);
-  const treeInitializedRef = useRef(false);  // Add this line
-
-  // Add active nodes tracking
-  const activeNodesRef = useRef(new Set());
-
-  // Constants
-  const FADE_TIME = 0.1;
-  const BASE_VOLUME = 1;
-
-  // Initialize Elementary on component mount
-  useEffect(() => {
-    let mounted = true;
-    let audioCtx = null;
-    
-    const setupAudio = async () => {
-      try {
-        audioCtx = new AudioContext();
-        await audioCtx.resume(); // Make sure context is active first
-  
-        const core = new WebRenderer();
-        console.log('Setting up audio, context state:', audioCtx.state);
-  
-        // Wait a tick to ensure context is fully ready
-        await new Promise(resolve => setTimeout(resolve, 0));
-        
-        const node = await core.initialize(audioCtx, {
-          numberOfInputs: 0,
-          numberOfOutputs: 1,
-          outputChannelCount: [2],
-        });
-  
-        console.log('Core initialized');
-        node.connect(audioCtx.destination);
-        
-        if (!mounted) return;
-  
-        console.log('Elementary Audio engine initialized');
-        rendererRef.current = core;
-        contextRef.current = audioCtx;
-        setRendererReady(true);
-  
-      } catch (err) {
-        console.error('Error initializing Elementary Audio:', err, err.stack);
-      }
-    };
-  
-    setupAudio();
-  
-    return () => {
-      mounted = false;
-      if (audioCtx?.state !== 'closed') {
-        audioCtx.close();
-      }
-    };
-  }, []);
-
-
-  useEffect(() => {
-    // Only try to load reverb if renderer is ready
-    if (!rendererReady) return;
-
-    const loadReverb = async () => {
-      try {
-        // Load reverb impulse response
-        const response = await fetch('/WIDEHALL-1.wav');
-        const arrayBuffer = await response.arrayBuffer();
-        const audioData = await rendererRef.current.context.decodeAudioData(arrayBuffer);
-
-        // Add to virtual file system
-        await rendererRef.current.updateVirtualFileSystem({
-          'reverb-ir': audioData.getChannelData(0)
-        });
-
-        console.log('Reverb IR loaded');
-      } catch (err) {
-        console.error('Error loading reverb:', err);
-      }
-    };
-
-    loadReverb();
-  }, [rendererReady]); // Use rendererReady instead of rendererRef.current
-
-  // Remove old audio setup code and replace with AudioManager initialization
-  useEffect(() => {
-    if (!audioManagerRef.current) {
-      audioManagerRef.current = new AudioManager();
-      audioManagerRef.current.initialize();
-    }
-    if (audioManagerRef.current) {
-      audioManagerRef.current.maxVoices = maxVoices;
-    }
-  }, [maxVoices]);
-
-  // Update redrawNodes to be more defensive
-  const redrawNodes = useCallback(() => {
-    if (!gRef.current || !audioManagerRef.current) return;
-    
-    const nodes = gRef.current.querySelectorAll('.node-circle');
-    const playingSounds = new Set([...audioManagerRef.current.playingCells.keys()]);
-    
-    nodes.forEach(node => {
-      const d = d3.select(node).datum();
-      const cellKey = `${d.data.id}-${d.data.id}`;
-      const isPlaying = playingSounds.has(cellKey);
-      const color = isPlaying ? '#ff0000' : 
-        (d.data.s ? d3.interpolateViridis(d.data.s) : "#999");
-      node.setAttribute('fill', color);
-    });
-  }, []);
-
-  // Memoize playAudioWithFade
-  const playAudioWithFade = useCallback(async (d) => {
-    if (!hasAudioInteraction || !audioManagerRef.current) return;
-
-    try {
-      const fileName = `${d.data.id}-${d.data.duration}_${d.data.noteDelta}_${d.data.velocity}.wav`;
-      const audioUrl = `${LINEAGE_SOUNDS_BUCKET_HOST}/${experiment}/${evoRunId}/${fileName}`;
-      
-      const result = await audioManagerRef.current.playSound(audioUrl, { 
-        i: d.data.id, 
-        j: d.data.id
+  // Update node hover handler to delegate audio
+  const handleNodeMouseOver = useCallback((event, d) => {
+    if (hasAudioInteraction && onCellHover) {
+      console.log('PhylogeneticViewer: node hover, sending data:', {
+        data: d.data,
+        experiment,
+        evoRunId,
+        config: {
+          duration: d.data.duration,
+          noteDelta: d.data.noteDelta,
+          velocity: d.data.velocity
+        }
       });
       
-      if (result) {
-        requestAnimationFrame(redrawNodes);
-        const voice = audioManagerRef.current.voices.get(result.voiceId);
-        if (voice?.source) {
-          voice.source.onended = () => requestAnimationFrame(redrawNodes);
+      onCellHover({
+        data: d.data,
+        experiment,
+        evoRunId,
+        config: {
+          duration: d.data.duration,
+          noteDelta: d.data.noteDelta,
+          velocity: d.data.velocity
         }
-      }
-    } catch (error) {
-      console.error('Error playing audio:', error);
-      requestAnimationFrame(redrawNodes);
+      });
     }
-  }, [experiment, evoRunId, hasAudioInteraction, redrawNodes]);
+  }, [experiment, evoRunId, hasAudioInteraction, onCellHover]);
 
-  // Remove stopAudioWithFade with cleanup using AudioManager
-  const stopAudioWithFade = async () => {
-    if (audioManagerRef.current) {
-      audioManagerRef.current.cleanup();
-      currentlyPlayingNodeRef.current = null;
-      requestAnimationFrame(redrawNodes); // Update to use redrawNodes
-    }
-  };
-
-  // Add cleanup on unmount
-  useEffect(() => {
-    return () => {
-      if (audioManagerRef.current) {
-        audioManagerRef.current.cleanup();
-      }
-      activeNodesRef.current.clear();
-    };
-  }, []);
-
-  // Update reverb mix when reverbAmount changes
-  useEffect(() => {
-    if (audioManagerRef.current) {
-      audioManagerRef.current.setReverbMix(reverbAmount);
-    }
-  }, [reverbAmount]);
-
-  // Slider handler
-  const handleReverbChange = useCallback((e) => {
-    setReverbAmount(Number(e.target.value));
-  }, []);
-
-  // Memoize heavy functions
-  const updateSearch = useCallback((term) => {
+  // Update node color based on selection
+  const updateNodeColors = useCallback(() => {
     if (!gRef.current) return;
     
-    const searchTerm = term.toLowerCase();
-    requestAnimationFrame(() => {
-      // Direct DOM manipulation instead of going through D3 selection
-      const nodes = gRef.current.querySelectorAll('.node');
-      const links = gRef.current.querySelectorAll('.link');
-
-      nodes.forEach(node => {
-        const d = d3.select(node).datum();
-        const opacity = d.data.name.toLowerCase().includes(searchTerm) ? 1 : 0.1;
-        node.style.opacity = opacity;
+    d3.select(gRef.current)
+      .selectAll('.node-circle')
+      .each(function(d) {
+        const node = d3.select(this);
+        const color = d.data.s ? d3.interpolateViridis(d.data.s) : "#999";
+        node.attr('fill', color);
       });
-
-      links.forEach(link => {
-        const d = d3.select(link).datum();
-        const opacity = d.target.data.name.toLowerCase().includes(searchTerm) ? 0.4 : 0.1;
-        link.style.opacity = opacity;
-      });
-    });
   }, []);
-
-  // Handle search input without state updates
-  const handleSearchInput = useCallback((e) => {
-    searchTermRef.current = e.target.value;
-    updateSearch(e.target.value);
-  }, [updateSearch]);
-
-  const handleNodeMouseOver = useCallback(async (event, d) => {
-    setTooltip({
-      show: true,
-      content: `ID: ${d.data.name || d.data.id}<br/>Score: ${d.data.s ? d.data.s.toFixed(3) : 'N/A'}<br/>Generation: ${d.data.gN || 'N/A'}`,
-      x: event.pageX,
-      y: event.pageY
-    });
-  
-    if (hasAudioInteraction && !silentMode && rendererRef.current) {
-      const fileName = `${d.data.id}-${d.data.duration}_${d.data.noteDelta}_${d.data.velocity}.wav`;
-      const audioUrl = `${LINEAGE_SOUNDS_BUCKET_HOST}/${experiment}/${evoRunId}/${fileName}`;
-  
-      try {
-        const response = await fetch(audioUrl);
-        const arrayBuffer = await response.arrayBuffer();
-        const audioData = await rendererRef.current.context.decodeAudioData(arrayBuffer);
-        
-        const vfsKey = `sound-${d.data.id}`;
-        await rendererRef.current.updateVirtualFileSystem({
-          [vfsKey]: audioData.getChannelData(0)
-        });
-  
-        // Create or reuse shared trigger
-        if (!triggerSourceRef.current) {
-          triggerSourceRef.current = el.train(
-            el.const({ key: 'shared-rate', value: 1 / audioData.duration })
-          );
-        }
-  
-        // Create new voice using shared trigger
-        const newVoice = el.mul(
-          el.mul(
-            el.sample(
-              { path: vfsKey, mode: 'trigger', key: `sample-${d.data.id}` }, 
-              triggerSourceRef.current,  // Use shared trigger
-              el.const({ key: `playback-rate-${d.data.id}`, value: 1 })
-            ),
-            el.adsr(
-              0.01,
-              0.1,
-              0.7,
-              0.3,
-              triggerSourceRef.current  // Use same shared trigger
-            )
-          ),
-          el.const({ key: `voice-gain-${d.data.id}`, value: 1 / maxVoices })
-        );
-  
-        // Manage voice collection
-        if (activeVoicesRef.current.size >= maxVoices) {
-          const [oldestKey] = activeVoicesRef.current.keys();
-          activeVoicesRef.current.delete(oldestKey);
-        }
-        activeVoicesRef.current.set(d.data.id, newVoice);
-  
-        // Mix all active voices
-        const voices = Array.from(activeVoicesRef.current.values());
-        let mix = voices.length > 1 ? el.add(...voices) : voices[0];
-  
-        // Add reverb if enabled
-        if (reverbAmount > 0) {
-          const reverbSignal = el.mul(
-            el.convolve({ path: 'reverb-ir', key: `reverb-${d.data.id}` }, mix),
-            el.const({ key: `wet-gain-${d.data.id}`, value: reverbAmount / 100 * 0.3 })
-          );
-          const drySignal = el.mul(
-            mix, 
-            el.const({ key: `dry-gain-${d.data.id}`, value: 1 - (reverbAmount / 100) })
-          );
-          mix = el.mul(
-            el.add(drySignal, reverbSignal),
-            el.const({ key: `master-gain-${d.data.id}`, value: 0.7 })
-          );
-        }
-  
-        await rendererRef.current.render(mix, mix);
-        requestAnimationFrame(redrawNodes);
-      } catch (error) {
-        console.error('Error playing sound:', error);
-      }
-    }
-  }, [experiment, evoRunId, hasAudioInteraction, silentMode, maxVoices, reverbAmount, redrawNodes]);
 
   // Initialize D3 visualization
   useEffect(() => {
@@ -408,7 +152,7 @@ const PhylogeneticViewer = ({
       .on("mouseover", handleNodeMouseOver)  // Use the memoized callback
       .on("mouseout", function(event, d) {
         setTooltip({ show: false, content: '', x: 0, y: 0 });
-        // Remove color update on mouseout since it's handled by redrawNodes
+        updateNodeColors();
       })
       .on("dblclick", (event, d) => {
         event.preventDefault();
@@ -460,8 +204,8 @@ const PhylogeneticViewer = ({
     // Store refs for direct access
     svgRef.current = svg.node();
     gRef.current = g.node();
-    nodesRef.current = node.node();
-    linksRef.current = links.node();
+    nodesRef.current = node; // Store D3 selection instead of DOM node
+    linksRef.current = links; // Store D3 selection instead of DOM node
 
     // Apply zoom behavior
     svg.call(zoom);
@@ -501,42 +245,21 @@ const PhylogeneticViewer = ({
     // Cleanup
     return () => {
       window.removeEventListener('resize', handleResize);
-      // Remove the old audio cleanup since we're using AudioManager now
-      audioManagerRef.current?.cleanup();
     };
-  }, [treeData, experiment, evoRunId, measureContextSwitches, hasAudioInteraction, handleNodeMouseOver]); // Remove silentMode
+  }, [treeData, experiment, evoRunId, measureContextSwitches, hasAudioInteraction, handleNodeMouseOver, updateNodeColors]);
 
-  // Add periodic redraw to catch any missed state changes
+  // Add periodic color update
   useEffect(() => {
-    const interval = setInterval(() => {
-      if (audioManagerRef.current) {
-        redrawNodes();
-      }
-    }, 100); // Check every 100ms
-
+    const interval = setInterval(updateNodeColors, 100);
     return () => clearInterval(interval);
-  }, [redrawNodes]);
+  }, [updateNodeColors]);
 
-  // Update click handler
+  // Update click handler to remove renderer references
   const handleClick = async (e) => {
     e.stopPropagation();
-    console.log('Click handler, hasAudioInteraction:', hasAudioInteraction, 'renderer ready:', rendererReady);
-    
-    if (!hasAudioInteraction && rendererReady) {
-      try {
-        await contextRef.current.resume();
-        onAudioInteraction();
-        console.log('Audio interaction enabled');
-      } catch (error) {
-        console.error('Error initializing audio:', error);
-      }
-    } else {
-      console.log('Audio not ready:', { 
-        hasAudioInteraction, 
-        rendererReady, 
-        contextState: contextRef.current?.state,
-        hasRenderer: !!rendererRef.current 
-      });
+    if (!hasAudioInteraction) {
+      console.log('Initializing audio interaction');
+      onAudioInteraction();
     }
   };
 
@@ -723,6 +446,7 @@ const PhylogeneticViewer = ({
           />
         )}
 
+        {/* Update silent mode text */}
         <div className="absolute bottom-2 left-2 text-white/70 text-xs flex items-center gap-2">
           <span>Hover: {silentMode ? 'navigation only' : 'play sound'} • Double-click: download</span>
           {silentMode && (

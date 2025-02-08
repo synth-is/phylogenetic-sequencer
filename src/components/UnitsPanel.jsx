@@ -1,6 +1,9 @@
 import { Volume2, Plus } from 'lucide-react';
-import { useState } from 'react';
-import { UNIT_TYPES } from '../App';
+import { useState, useEffect, useRef } from 'react';
+import { UNIT_TYPES } from '../constants';
+import { TrajectoryUnit } from '../units/TrajectoryUnit';
+import { CellDataFormatter } from '../utils/CellDataFormatter';
+import { useUnits } from '../UnitsContext';
 
 const UnitTypeSelector = ({ onSelect, onClose }) => (
   <div className="absolute bottom-12 left-0 right-0 mx-2 bg-gray-800 rounded-sm shadow-lg overflow-hidden">
@@ -19,8 +22,120 @@ const UnitTypeSelector = ({ onSelect, onClose }) => (
   </div>
 );
 
-const UnitsPanel = ({ units, onAddUnit, onRemoveUnit, onToggleState, onUpdateVolume, onSelectUnit, selectedUnitId }) => {
+const UnitsPanel = ({ 
+  units, 
+  onAddUnit, 
+  onRemoveUnit, 
+  onToggleState, 
+  onUpdateVolume, 
+  onSelectUnit, 
+  selectedUnitId, 
+  onCellHover 
+}) => {
   const [showTypeSelector, setShowTypeSelector] = useState(false);
+  const { handleCellHover, updateUnitConfig } = useUnits();
+  const unitsRef = useRef(new Map());
+
+  // Handle cell hover events
+  useEffect(() => {
+    console.log('UnitsPanel received hover data:', onCellHover);
+  
+    if (!selectedUnitId || !onCellHover) {
+      console.log('UnitsPanel bail conditions:', {
+        noSelectedUnit: !selectedUnitId,
+        noHoverData: !onCellHover
+      });
+      return;
+    }
+  
+    const formattedData = CellDataFormatter.formatCellData(
+      onCellHover.data,
+      onCellHover.experiment,
+      onCellHover.evoRunId,
+      onCellHover.config
+    );
+  
+    console.log('UnitsPanel formatted data:', formattedData);
+    
+    if (formattedData) {
+      console.log('UnitsPanel forwarding to UnitsContext:', {
+        unitId: selectedUnitId,
+        formattedData
+      });
+      handleCellHover(selectedUnitId, formattedData).catch(err => 
+        console.error('Error in handleCellHover:', err)
+      );
+    }
+  }, [selectedUnitId, onCellHover, handleCellHover]);
+
+  // Handle unit config updates
+  useEffect(() => {
+    units.forEach(unit => {
+      updateUnitConfig(unit.id, {
+        active: unit.active,
+        muted: unit.muted,
+        soloed: unit.soloed,
+        volume: unit.volume
+      });
+    });
+  }, [units, updateUnitConfig]);
+
+  // Initialize new units
+  useEffect(() => {
+    units.forEach(async unit => {
+      if (!unitsRef.current.has(unit.id)) {
+        if (unit.type === UNIT_TYPES.TRAJECTORY) {
+          console.log('Creating new TrajectoryUnit:', unit.id);
+          const trajectoryUnit = new TrajectoryUnit(unit.id);
+          await trajectoryUnit.initialize();
+          unitsRef.current.set(unit.id, trajectoryUnit);
+        }
+      }
+    });
+
+    // Update existing units' configuration
+    units.forEach(unit => {
+      const trajectoryUnit = unitsRef.current.get(unit.id);
+      if (trajectoryUnit) {
+        trajectoryUnit.updateConfig(unit);
+      }
+    });
+
+    // Cleanup removed units
+    Array.from(unitsRef.current.keys()).forEach(id => {
+      if (!units.find(u => u.id === id)) {
+        console.log('Cleaning up TrajectoryUnit:', id);
+        unitsRef.current.get(id).cleanup();
+        unitsRef.current.delete(id);
+      }
+    });
+  }, [units]);
+
+  // Handle cell hover events with formatted data
+  useEffect(() => {
+    if (!selectedUnitId || !unitsRef.current.has(selectedUnitId) || !onCellHover) return;
+    
+    const trajectoryUnit = unitsRef.current.get(selectedUnitId);
+    console.log('UnitsPanel checking hover data:', { 
+      hasUnit: !!trajectoryUnit,
+      unitType: trajectoryUnit?.type,
+      hoverData: onCellHover
+    });
+    
+    if (trajectoryUnit && trajectoryUnit.type === UNIT_TYPES.TRAJECTORY && onCellHover) {
+      const formattedData = CellDataFormatter.formatCellData(
+        onCellHover.data,
+        onCellHover.experiment,
+        onCellHover.evoRunId,
+        onCellHover.config
+      );
+      
+      if (formattedData) {
+        console.log('UnitsPanel forwarding to TrajectoryUnit:', formattedData);
+        trajectoryUnit.handleCellHover(formattedData);
+      }
+    }
+  }, [selectedUnitId, onCellHover]);
 
   return (
     <div className="h-fit bg-gray-900/95 backdrop-blur border-r border-gray-800">
@@ -32,9 +147,8 @@ const UnitsPanel = ({ units, onAddUnit, onRemoveUnit, onToggleState, onUpdateVol
             className={`bg-gray-800/50 rounded-sm p-2 cursor-pointer select-none transition-all
               ${selectedUnitId === unit.id ? 'ring-1 ring-blue-500' : ''}`}
           >
-            {/* All controls in a non-interactive div by default */}
+            {/* Controls */}
             <div className="pointer-events-none flex flex-col gap-2">
-              {/* Controls row with explicit pointer-events-auto */}
               <div className="flex items-center gap-1.5 pointer-events-auto">
                 <button
                   onClick={(e) => {
@@ -85,7 +199,6 @@ const UnitsPanel = ({ units, onAddUnit, onRemoveUnit, onToggleState, onUpdateVol
                 </button>
               </div>
               
-              {/* Volume controls with explicit pointer-events-auto */}
               <div className="flex flex-col gap-0.5 pointer-events-auto">
                 <input
                   type="range"
