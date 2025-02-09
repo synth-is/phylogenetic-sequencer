@@ -24,12 +24,13 @@ const UnitTypeSelector = ({ onSelect, onClose }) => (
 
 const UnitsPanel = ({ 
   units, 
-  onAddUnit, 
-  onRemoveUnit, 
-  onToggleState, 
-  onUpdateVolume, 
-  onSelectUnit, 
+  onPlaybackChange,
   selectedUnitId, 
+  onSelectUnit, 
+  onAddUnit, 
+  onRemoveUnit,
+  onToggleState,
+  onUpdateVolume,
   onCellHover 
 }) => {
   const [showTypeSelector, setShowTypeSelector] = useState(false);
@@ -103,6 +104,143 @@ const UnitsPanel = ({
       }
     }
   }, [selectedUnitId, onCellHover]);
+
+  // Add new state for trajectory recording status
+  const [recordingStatus, setRecordingStatus] = useState({});
+
+  // Add state to track trajectory UIs independent of hover events
+  const [trajectoryStates, setTrajectoryStates] = useState(new Map());
+
+  // Force UI updates for trajectory controls
+  const forceTrajectoryUpdate = (unitId) => {
+    const trajectoryUnit = unitsRef.current.get(unitId);
+    if (!trajectoryUnit) return;
+
+    // Create a snapshot of current trajectory states
+    const trajectories = Array.from(trajectoryUnit.trajectories.entries()).map(
+      ([id, traj]) => ({
+        id,
+        isPlaying: traj.isPlaying
+      })
+    );
+
+    setTrajectoryStates(prev => new Map(prev).set(unitId, trajectories));
+  };
+
+  // Initialize trajectory states when units are created
+  useEffect(() => {
+    units.forEach(unit => {
+      if (unit.type === UNIT_TYPES.TRAJECTORY) {
+        forceTrajectoryUpdate(unit.id);
+      }
+    });
+  }, [units]);
+
+  // Add keyboard shortcut handler
+  useEffect(() => {
+    const handleKeyPress = (e) => {
+      // Only trigger if a unit is selected and key isn't pressed in an input
+      if (!selectedUnitId || e.target.tagName === 'INPUT') return;
+      
+      if (e.key.toLowerCase() === 's') {
+        e.preventDefault();
+        const trajectoryUnit = unitsRef.current.get(selectedUnitId);
+        if (!trajectoryUnit) return;
+
+        const isRecording = recordingStatus[selectedUnitId];
+        if (!isRecording) {
+          const trajectoryId = trajectoryUnit.startTrajectoryRecording();
+          setRecordingStatus(prev => ({ ...prev, [selectedUnitId]: true }));
+          forceTrajectoryUpdate(selectedUnitId);
+        } else {
+          trajectoryUnit.stopTrajectoryRecording();
+          setRecordingStatus(prev => ({ ...prev, [selectedUnitId]: false }));
+          forceTrajectoryUpdate(selectedUnitId);
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyPress);
+    return () => window.removeEventListener('keydown', handleKeyPress);
+  }, [selectedUnitId, recordingStatus]);
+
+  // Add trajectory controls renderer
+  const renderTrajectoryControls = (unit) => {
+    if (unit.type !== UNIT_TYPES.TRAJECTORY) return null;
+
+    const trajectoryUnit = unitsRef.current.get(unit.id);
+    if (!trajectoryUnit) return null;
+
+    const isRecording = recordingStatus[unit.id];
+    const trajectories = trajectoryStates.get(unit.id) || [];
+
+    return (
+      <div className="mt-2 space-y-2">
+        <div className="flex gap-2">
+          <button
+            onClick={() => {
+              if (!isRecording) {
+                const trajectoryId = trajectoryUnit.startTrajectoryRecording();
+                setRecordingStatus(prev => ({ ...prev, [unit.id]: true }));
+                forceTrajectoryUpdate(unit.id);
+              } else {
+                trajectoryUnit.stopTrajectoryRecording();
+                setRecordingStatus(prev => ({ ...prev, [unit.id]: false }));
+                forceTrajectoryUpdate(unit.id);
+              }
+            }}
+            className={`px-2 py-1 text-xs rounded ${
+              isRecording 
+                ? 'bg-red-600 text-white' 
+                : 'bg-blue-600 text-white'
+            }`}
+          >
+            {isRecording ? '(S)top Recording' : '(S)tart Recording'}
+          </button>
+        </div>
+
+        {/* Render trajectory list */}
+        <div className="space-y-1">
+          {trajectories.map(({ id: trajectoryId, isPlaying }) => (
+            <div 
+              key={trajectoryId}
+              className="flex items-center gap-2 px-2 py-1 bg-gray-700/50 rounded-sm"
+            >
+              <span className="text-xs text-gray-300">
+                Trajectory {String(trajectoryId).slice(-4)}
+              </span>
+              <button
+                onClick={() => {
+                  if (isPlaying) {
+                    trajectoryUnit.stopTrajectory(trajectoryId);
+                  } else {
+                    trajectoryUnit.playTrajectory(trajectoryId);
+                  }
+                  forceTrajectoryUpdate(unit.id);
+                }}
+                className={`px-1.5 py-0.5 text-xs rounded ${
+                  isPlaying
+                    ? 'bg-yellow-600 text-white'
+                    : 'bg-gray-600 text-gray-300'
+                }`}
+              >
+                {isPlaying ? 'Stop' : 'Play'}
+              </button>
+              <button
+                onClick={() => {
+                  trajectoryUnit.removeTrajectory(trajectoryId);
+                  forceTrajectoryUpdate(unit.id);
+                }}
+                className="px-1.5 py-0.5 text-xs rounded bg-red-600/50 text-white hover:bg-red-600"
+              >
+                Remove
+              </button>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div className="h-fit bg-gray-900/95 backdrop-blur border-r border-gray-800">
@@ -184,6 +322,7 @@ const UnitsPanel = ({
                 </div>
               </div>
             </div>
+            {unit.id === selectedUnitId && renderTrajectoryControls(unit)}
           </div>
         ))}
         

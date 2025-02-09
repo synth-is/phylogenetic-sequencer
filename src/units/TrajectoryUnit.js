@@ -43,6 +43,13 @@ export class TrajectoryUnit {
     this.lastHoverTimes = new Map();
     this.highlightTimeouts = new Map(); // Add this line
     this.loopStateCallbacks = new Map(); // Add this to track callbacks per genome
+
+    // Add trajectory recording state
+    this.trajectories = new Map(); // Map of trajectory ID to trajectory data
+    this.isRecording = false;
+    this.recordingStartTime = null;
+    this.currentRecordingId = null;
+    this.activeTrajectorySignals = new Map();
   }
 
   async initialize() {
@@ -317,6 +324,11 @@ export class TrajectoryUnit {
       console.log('Calling onEnded due to error');
       cellData.config?.onEnded?.(); // Ensure callback is called even on error
     }
+
+    // Add recording functionality
+    if (this.isRecording) {
+      this.recordEvent(cellData);
+    }
   }
 
   // Add new methods for voice management
@@ -340,6 +352,14 @@ export class TrajectoryUnit {
     // Apply reverb if enabled
     if (this.reverbAmount > 0) {
       // ...existing reverb code...
+    }
+
+    // Add trajectory signals to the mix
+    if (this.activeTrajectorySignals.size > 0) {
+      const trajectorySignals = Array.from(this.activeTrajectorySignals.values());
+      const trajectoryMix = trajectorySignals.length === 1 ? 
+        trajectorySignals[0] : el.add(...trajectorySignals);
+      mix = mix ? el.add(mix, trajectoryMix) : trajectoryMix;
     }
 
     // Render final mix
@@ -417,6 +437,12 @@ export class TrajectoryUnit {
     this.highlightTimeouts.forEach(timeoutId => clearTimeout(timeoutId));
     this.highlightTimeouts.clear();
     this.loopStateCallbacks.clear();
+
+    this.activeTrajectorySignals.clear();
+    this.trajectories.clear();
+    this.isRecording = false;
+    this.currentRecordingId = null;
+    this.recordingStartTime = null;
   }
 
   // Add method to check if a genome has active voices
@@ -441,5 +467,167 @@ export class TrajectoryUnit {
     });
     
     return hasLoopingVoice || hasOneOffVoice;
+  }
+
+  startTrajectoryRecording() {
+    if (this.isRecording) return;
+
+    this.isRecording = true;
+    this.currentRecordingId = Date.now();
+    this.recordingStartTime = null;
+
+    const trajectoryData = {
+      events: [],
+      isPlaying: false
+    };
+
+    this.trajectories.set(this.currentRecordingId, trajectoryData);
+    console.log('Started recording new trajectory:', this.currentRecordingId);
+    return this.currentRecordingId;
+  }
+
+  recordEvent(cellData) {
+    if (!this.isRecording || !this.currentRecordingId) return;
+
+    const currentTime = this.recordingStartTime === null ? 
+      0 : (Date.now() - this.recordingStartTime) / 1000;
+
+    if (this.recordingStartTime === null) {
+      this.recordingStartTime = Date.now();
+    }
+
+    const trajectory = this.trajectories.get(this.currentRecordingId);
+    trajectory.events.push({
+      time: currentTime,
+      cellData
+    });
+  }
+
+  stopTrajectoryRecording() {
+    if (!this.isRecording || !this.currentRecordingId) return null;
+
+    const trajectory = this.trajectories.get(this.currentRecordingId);
+    const currentTime = (Date.now() - this.recordingStartTime) / 1000;
+
+    // Add end marker
+    trajectory.events.push({
+      time: currentTime,
+      cellData: null
+    });
+
+    const recordingId = this.currentRecordingId;
+    
+    this.isRecording = false;
+    this.currentRecordingId = null;
+    this.recordingStartTime = null;
+
+    this.playTrajectory(recordingId);
+    return recordingId;
+  }
+
+  async playTrajectory(trajectoryId) {
+    const trajectory = this.trajectories.get(trajectoryId);
+    if (!trajectory || trajectory.events.length === 0) return;
+
+    trajectory.isPlaying = true;
+
+    try {
+      // Ensure all samples are loaded in VFS first
+      for (const event of trajectory.events) {
+        if (event.cellData && event.cellData.audioUrl) {
+          const vfsKey = `sound-${event.cellData.genomeId}`;
+          
+          if (!this.audioDataCache.has(vfsKey)) {
+            const response = await fetch(event.cellData.audioUrl);
+            if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+            const arrayBuffer = await response.arrayBuffer();
+            const audioData = await this.context.decodeAudioData(arrayBuffer);
+            this.audioDataCache.set(vfsKey, audioData);
+            
+            // Update VFS
+            const vfsUpdate = {};
+            vfsUpdate[vfsKey] = audioData.getChannelData(0);
+            await this.renderer.updateVirtualFileSystem(vfsUpdate);
+          }
+        }
+      }
+
+      // Create timing signal - 100Hz clock
+      const ticker = el.train(100);
+
+      // First, create the sequence with unique values for EACH event
+      const seq = trajectory.events
+        .filter(evt => evt.cellData)
+        .map((evt, i) => ({
+          tickTime: Math.round(evt.time * 100) + 1,
+          value: i + 1,  // Unique value for each event, regardless of genome
+          genomeId: evt.cellData.genomeId
+        }));
+
+      const firstTick = seq[0].tickTime - 1;
+      const latestEndpoint = Math.max(
+        ...trajectory.events
+          .filter(evt => evt.time !== undefined)
+          .map(evt => Math.round(evt.time * 100))
+      );
+
+      // Create master sequence
+      const masterSeq = el.sparseq({
+        key: `trajectory-${trajectoryId}-master`,
+        seq: seq,
+        loop: [firstTick, latestEndpoint]
+      }, ticker, el.const({ value: 0 }));
+
+      // Create individual triggers for EACH event
+      const players = seq.map((event, index) => {
+        const vfsKey = `sound-${event.genomeId}`;
+        
+        // Create individual trigger for this specific event
+        const trigger = el.eq(
+          masterSeq,
+          el.const({ 
+            key: `event-${trajectoryId}-${index}-value`,
+            value: event.value 
+          })
+        );
+
+        return el.mc.sample({
+          channels: 1,
+          key: `player-${trajectoryId}-${index}`,
+          path: vfsKey,
+          mode: 'trigger',
+          playbackRate: this.playbackRate,
+          startOffset: this.attackTime,
+          endOffset: this.releaseTime
+        }, trigger)[0];
+      });
+
+      if (players.length > 0) {
+        const signal = players.length === 1 ?
+          el.mul(players[0], el.const({ key: `gain-${trajectoryId}`, value: 1 / this.maxVoices })) :
+          el.mul(el.add(...players), el.const({ key: `gain-${trajectoryId}`, value: 1 / this.maxVoices }));
+
+        this.activeTrajectorySignals.set(trajectoryId, signal);
+        this.updateVoiceMix();
+      }
+
+    } catch (error) {
+      console.error('Error playing trajectory:', error);
+      trajectory.isPlaying = false;
+    }
+  }
+
+  stopTrajectory(trajectoryId) {
+    const trajectory = this.trajectories.get(trajectoryId);
+    if (trajectory) {
+      trajectory.isPlaying = false;
+      this.activeTrajectorySignals.delete(trajectoryId);
+      this.updateVoiceMix();
+    }
+  }
+
+  removeTrajectory(trajectoryId) {
+    this.stopTrajectory(trajectoryId);
+    this.trajectories.delete(trajectoryId);
   }
 }
