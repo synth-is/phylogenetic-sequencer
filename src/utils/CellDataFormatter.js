@@ -6,23 +6,21 @@ export class CellDataFormatter {
     
     if (!data || !data.id) return null;
 
-    const duration = config?.duration || "4";
-    const noteDelta = config?.noteDelta || "0";
-    const velocity = config?.velocity || "1";
-
-    const fileName = `${data.id}-${duration}_${noteDelta}_${velocity}.wav`;
-    const audioUrl = `${LINEAGE_SOUNDS_BUCKET_HOST}/${experiment}/${evoRunId}/${fileName}`;
-
+    // Ensure we pass through the config callbacks
     return {
-      audioUrl,
+      audioUrl: `${LINEAGE_SOUNDS_BUCKET_HOST}/${experiment}/${evoRunId}/${data.id}-${config?.duration || "4"}_${config?.noteDelta || "0"}_${config?.velocity || "1"}.wav`,
       genomeId: data.id,
       score: data.s || 0,
       generation: data.gN || 0,
-      position: { x: 0, y: 0 },  // Optional position data
+      position: { x: 0, y: 0 },
       metadata: {
         ...data,
         experiment,
         evoRunId
+      },
+      config: {  // Add this to preserve callbacks
+        ...config,
+        onEnded: config?.onEnded
       }
     };
   }

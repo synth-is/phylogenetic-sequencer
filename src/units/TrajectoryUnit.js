@@ -34,6 +34,15 @@ export class TrajectoryUnit {
     this.loopingVoices = new Map(); // Track which sounds are currently looping
     this.oneOffVoices = new Map(); // Track active one-off voices
     this.voiceTimeouts = new Map(); // Add this line
+
+    // Add new maps to track pending and active sounds
+    this.pendingCallbacks = new Map(); // Store callbacks for each genome ID
+    this.activeGenomes = new Map(); // Track which genomes are actually playing
+
+    this.hoverDebounce = 50; // ms
+    this.lastHoverTimes = new Map();
+    this.highlightTimeouts = new Map(); // Add this line
+    this.loopStateCallbacks = new Map(); // Add this to track callbacks per genome
   }
 
   async initialize() {
@@ -93,6 +102,7 @@ export class TrajectoryUnit {
       muted: this.muted,
       hasRenderer: !!this.renderer,
       cellData,
+      hasCallback: !!cellData?.config?.onEnded,  // Add this debug log
       playbackMode: this.playbackMode
     });
   
@@ -102,6 +112,17 @@ export class TrajectoryUnit {
   
     const { audioUrl, genomeId } = cellData;
     if (!audioUrl || !genomeId) return;
+
+    const now = Date.now();
+    const lastHover = this.lastHoverTimes.get(genomeId) || 0;
+    
+    // Debounce rapid hover events
+    if (now - lastHover < this.hoverDebounce) {
+      console.log('TrajectoryUnit debouncing rapid hover:', genomeId);
+      return;
+    }
+    
+    this.lastHoverTimes.set(genomeId, now);
   
     try {
       const vfsKey = `sound-${genomeId}`;
@@ -122,13 +143,33 @@ export class TrajectoryUnit {
       vfsUpdate[vfsKey] = audioData.getChannelData(0);
       await this.renderer.updateVirtualFileSystem(vfsUpdate);
 
+      // Clear any existing highlight timeout for this genome
+      if (this.highlightTimeouts.has(genomeId)) {
+        clearTimeout(this.highlightTimeouts.get(genomeId));
+        this.highlightTimeouts.delete(genomeId);
+      }
+
+      // Set a fallback timeout to ensure highlight gets cleared
+      const highlightTimeout = setTimeout(() => {
+        console.log('Forcing highlight cleanup for:', genomeId);
+        if (!this.loopingVoices.has(genomeId)) {
+          cellData.config?.onEnded?.();
+        }
+      }, 5000); // 5 second fallback
+
+      this.highlightTimeouts.set(genomeId, highlightTimeout);
+
       if (this.playbackMode === 'looping') {
-        // Toggle: remove if already looping, add if not
+        // Store callback for this genome
+        this.loopStateCallbacks.set(genomeId, cellData.config?.onLoopStateChanged);
+
         if (this.loopingVoices.has(genomeId)) {
-            console.log('Looping voice stopped:', genomeId);
-            this.loopingVoices.delete(genomeId);
-            this.updateVoiceMix();
-            return;
+          console.log('Stopping looping voice:', genomeId);
+          this.loopingVoices.delete(genomeId);
+          this.updateVoiceMix();
+          // Notify that loop has stopped
+          cellData.config?.onLoopStateChanged?.(false);
+          return;
         }
 
         if( ! this.loopingVoices.has(genomeId) ) {
@@ -161,15 +202,36 @@ export class TrajectoryUnit {
             voice,
             audioUrl,
             duration: audioData.duration,
-            timestamp: Date.now()
+            timestamp: Date.now(),
+            isLooping: true  // Add this flag
             });
+
+            cellData.config?.onLoopStateChanged?.(true);
         }
       } else { // one-off mode
-        console.log('One-off voice triggered:', genomeId);
+        // Store callback before potentially superseding the voice
+        this.pendingCallbacks.set(genomeId, cellData.config?.onEnded);
+
         // Clean up old voices if at max
         if (this.oneOffVoices.size >= this.maxVoices) {
-          const [oldestId] = this.oneOffVoices.keys();
-          this.oneOffVoices.delete(oldestId);
+          const [oldestVoiceId] = this.oneOffVoices.keys();
+          const oldestGenomeId = oldestVoiceId.split('-')[0];
+          
+          // Call onEnded for the superseded voice
+          console.log('Superseding voice:', {
+            oldestVoiceId,
+            oldestGenomeId,
+            hasCallback: !!this.pendingCallbacks.get(oldestGenomeId)
+          });
+
+          // Only call onEnded if the genome isn't also playing in looping mode
+          if (!this.loopingVoices.has(oldestGenomeId)) {
+            const callback = this.pendingCallbacks.get(oldestGenomeId);
+            if (callback) callback();
+          }
+
+          this.oneOffVoices.delete(oldestVoiceId);
+          this.pendingCallbacks.delete(oldestGenomeId);
           this.updateVoiceMix();
         }
 
@@ -194,12 +256,56 @@ export class TrajectoryUnit {
         this.oneOffVoices.set(voiceId, voice);
         this.updateVoiceMix();
 
-        // Remove voice after duration
+        // Track that this genome is now actually playing
+        this.activeGenomes.set(genomeId, {
+          mode: 'one-off',
+          timestamp: Date.now()
+        });
+
+        // Calculate actual sound duration including release time
+        const totalDuration = audioData.duration + this.releaseTime;
+        
+        console.log('Setting up voice completion timeout:', {
+          voiceId,
+          genomeId,
+          duration: totalDuration,
+          hasCallback: !!cellData?.config?.onEnded,  // Add callback check to debug log
+          callbackType: typeof cellData?.config?.onEnded  // Log callback type
+        });
+
+        // Remove voice and trigger callback after sound fully completes
         const timeoutId = setTimeout(() => {
+          console.log('Voice completion timeout fired:', {
+            voiceId,
+            genomeId,
+            activeVoicesForGenome: Array.from(this.oneOffVoices.keys())
+              .filter(id => id.startsWith(genomeId)),
+            hasLoopingVoice: this.loopingVoices.has(genomeId),
+            hasCallback: !!this.pendingCallbacks.get(genomeId)  // Add callback check here too
+          });
+
           this.oneOffVoices.delete(voiceId);
           this.voiceTimeouts.delete(voiceId);
+          this.activeGenomes.delete(genomeId);
           this.updateVoiceMix();
-        }, audioData.duration * 1000);
+          
+          // Only trigger onEnded if this was the last voice for this genome
+          // AND there's no looping voice for this genome
+          const activeVoicesForGenome = Array.from(this.oneOffVoices.keys())
+            .filter(id => id.startsWith(genomeId));
+          
+          if (activeVoicesForGenome.length === 0 && !this.loopingVoices.has(genomeId)) {
+            console.log('Calling onEnded callback for genome:', genomeId);
+            const callback = this.pendingCallbacks.get(genomeId);
+            if (callback) callback();
+            this.pendingCallbacks.delete(genomeId);
+          } else {
+            console.log('Skipping onEnded - active voices remain or looping:', {
+              activeOneOffs: activeVoicesForGenome,
+              isLooping: this.loopingVoices.has(genomeId)
+            });
+          }
+        }, totalDuration * 1000);
 
         this.voiceTimeouts.set(voiceId, timeoutId);
       }
@@ -208,6 +314,8 @@ export class TrajectoryUnit {
 
     } catch (error) {
       console.error(`TrajectoryUnit ${this.id} playback error:`, error);
+      console.log('Calling onEnded due to error');
+      cellData.config?.onEnded?.(); // Ensure callback is called even on error
     }
   }
 
@@ -285,5 +393,53 @@ export class TrajectoryUnit {
     // Clear all voice timeouts
     this.voiceTimeouts.forEach(timeoutId => clearTimeout(timeoutId));
     this.voiceTimeouts.clear();
+
+    // Ensure all onEnded callbacks are triggered during cleanup
+    const activeGenomes = new Set(
+      Array.from(this.oneOffVoices.keys())
+        .map(id => id.split('-')[0])
+    );
+    
+    activeGenomes.forEach(genomeId => {
+      const timeoutIds = Array.from(this.voiceTimeouts.entries())
+        .filter(([id]) => id.startsWith(genomeId))
+        .map(([_, timeoutId]) => timeoutId);
+      
+      timeoutIds.forEach(timeoutId => clearTimeout(timeoutId));
+    });
+
+    // Clean up new tracking maps
+    this.pendingCallbacks.clear();
+    this.activeGenomes.clear();
+    this.lastHoverTimes.clear();
+    
+    // Clear all highlight timeouts
+    this.highlightTimeouts.forEach(timeoutId => clearTimeout(timeoutId));
+    this.highlightTimeouts.clear();
+    this.loopStateCallbacks.clear();
+  }
+
+  // Add method to check if a genome has active voices
+  hasActiveVoices(genomeId) {
+    return Array.from(this.oneOffVoices.keys())
+      .some(id => id.startsWith(genomeId));
+  }
+
+  // Add a new method to check if a genome has any kind of active voices
+  hasAnyActiveVoices(genomeId) {
+    const hasLoopingVoice = this.loopingVoices.has(genomeId);
+    const hasOneOffVoice = Array.from(this.oneOffVoices.keys())
+      .some(id => id.startsWith(genomeId));
+    const isTrackedAsActive = this.activeGenomes.has(genomeId);
+    
+    console.log('Checking active voices:', {
+      genomeId,
+      hasLoopingVoice,
+      hasOneOffVoice,
+      isTrackedAsActive,
+      activeGenomes: Array.from(this.activeGenomes.keys())
+    });
+    
+    return hasLoopingVoice || hasOneOffVoice;
   }
 }

@@ -27,55 +27,19 @@ const PhylogeneticViewer = ({
   const linksRef = useRef(null);
   const currentZoomTransformRef = useRef(null);
   const treeInitializedRef = useRef(false);
+  const playingNodesRef = useRef(new Set());
+  const hoverTimestampsRef = useRef(new Map());
+  const HOVER_DEBOUNCE = 50; // ms
 
-  // Update node hover handler to delegate audio
-  const handleNodeMouseOver = useCallback((event, d) => {
-    if (hasAudioInteraction && onCellHover) {
-      console.log('PhylogeneticViewer: node hover, sending data:', {
-        data: d.data,
-        experiment,
-        evoRunId,
-        config: {
-          duration: d.data.duration,
-          noteDelta: d.data.noteDelta,
-          velocity: d.data.velocity
-        }
-      });
-      
-      onCellHover({
-        data: d.data,
-        experiment,
-        evoRunId,
-        config: {
-          duration: d.data.duration,
-          noteDelta: d.data.noteDelta,
-          velocity: d.data.velocity
-        }
-      });
-    }
-  }, [experiment, evoRunId, hasAudioInteraction, onCellHover]);
+  // Add refs for highlight tracking
+  const highlightTimestampsRef = useRef(new Map());
+  const cleanupIntervalRef = useRef(null);
+  const HIGHLIGHT_EXPIRY = 5000; // 5 seconds max highlight lifetime
 
-  const handleNodeClick = useCallback((event, d) => {
-    if (hasAudioInteraction && onCellHover) {
-      // Send click event to stop looping sound
-      console.log('PhylogeneticViewer: node click, sending data to stop loop:', {
-        data: d.data,
-        experiment,
-        evoRunId
-      });
-      
-      onCellHover({
-        data: d.data,
-        experiment,
-        evoRunId,
-        config: {
-          stopLoop: true // Add flag to indicate click to stop loop
-        }
-      });
-    }
-  }, [experiment, evoRunId, hasAudioInteraction, onCellHover]);
+  // Add new ref to track looping state
+  const loopingNodesRef = useRef(new Set());
 
-  // Update node color based on selection
+  // 1. First define the basic color update function
   const updateNodeColors = useCallback(() => {
     if (!gRef.current) return;
     
@@ -83,10 +47,109 @@ const PhylogeneticViewer = ({
       .selectAll('.node-circle')
       .each(function(d) {
         const node = d3.select(this);
-        const color = d.data.s ? d3.interpolateViridis(d.data.s) : "#999";
+        const isPlaying = playingNodesRef.current.has(d.data.id);
+        const isHovered = node.classed('hovered');
+        const color = isPlaying || isHovered ? 'red' : 
+                     (d.data.s ? d3.interpolateViridis(d.data.s) : "#999");
         node.attr('fill', color);
       });
   }, []);
+
+  // 2. Then define setNodePlaying which uses updateNodeColors
+  const setNodePlaying = useCallback((nodeId, isPlaying, isLooping = false) => {
+    console.log('setNodePlaying:', { nodeId, isPlaying, isLooping });
+    
+    if (isPlaying) {
+      playingNodesRef.current.add(nodeId);
+      highlightTimestampsRef.current.set(nodeId, Date.now());
+      if (isLooping) {
+        loopingNodesRef.current.add(nodeId);
+      }
+    } else {
+      playingNodesRef.current.delete(nodeId);
+      highlightTimestampsRef.current.delete(nodeId);
+      loopingNodesRef.current.delete(nodeId);
+    }
+    
+    console.log('Current state:', {
+      playing: Array.from(playingNodesRef.current),
+      looping: Array.from(loopingNodesRef.current)
+    });
+    updateNodeColors();
+  }, [updateNodeColors]);
+
+  // 3. Finally define the handlers that use setNodePlaying
+  const handleNodeMouseOver = useCallback((event, d) => {
+    if (!hasAudioInteraction || !onCellHover) return;
+
+    const now = Date.now();
+    const lastHover = hoverTimestampsRef.current.get(d.data.id) || 0;
+    
+    // Debounce rapid hover events
+    if (now - lastHover < HOVER_DEBOUNCE) {
+      console.log('Debouncing rapid hover:', d.data.id);
+      return;
+    }
+    
+    hoverTimestampsRef.current.set(d.data.id, now);
+    
+    console.log('Node mouseOver:', { 
+      nodeId: d.data.id,
+      isPlaying: playingNodesRef.current.has(d.data.id)
+    });
+
+    // Refresh highlight timestamp
+    highlightTimestampsRef.current.set(d.data.id, Date.now());
+
+    setNodePlaying(d.data.id, true);
+    
+    onCellHover({
+      data: d.data,
+      experiment,
+      evoRunId,
+      config: {
+        duration: d.data.duration,
+        noteDelta: d.data.noteDelta,
+        velocity: d.data.velocity,
+        onLoopStateChanged: (isLooping) => {
+          console.log('Loop state changed:', { nodeId: d.data.id, isLooping });
+          setNodePlaying(d.data.id, isLooping, isLooping);
+        },
+        onEnded: () => {
+          const isHovered = d3.select(event.target).classed('hovered');
+          const isLooping = loopingNodesRef.current.has(d.data.id);
+          
+          console.log('Sound ended:', {
+            nodeId: d.data.id,
+            isHovered,
+            isLooping
+          });
+
+          // Only remove highlight if not looping and not hovered
+          if (!isLooping && !isHovered) {
+            setNodePlaying(d.data.id, false);
+          }
+        }
+      }
+    });
+  }, [experiment, evoRunId, hasAudioInteraction, onCellHover, setNodePlaying]);
+
+  const handleNodeClick = useCallback((event, d) => {
+    if (!hasAudioInteraction || !onCellHover) return;
+    
+    // Mark node as stopping before clearing playing state
+    d3.select(event.target).classed('stopping', true);
+    setNodePlaying(d.data.id, false);
+    
+    onCellHover({
+      data: d.data,
+      experiment,
+      evoRunId,
+      config: {
+        stopLoop: true
+      }
+    });
+  }, [experiment, evoRunId, hasAudioInteraction, onCellHover, setNodePlaying]);
 
   // Initialize D3 visualization
   useEffect(() => {
@@ -275,6 +338,15 @@ const PhylogeneticViewer = ({
     return () => clearInterval(interval);
   }, [updateNodeColors]);
 
+  // Add cleanup interval for stale highlights
+  useEffect(() => {
+    return () => {
+      highlightTimestampsRef.current.clear();
+      playingNodesRef.current.clear();
+      loopingNodesRef.current.clear();
+    };
+  }, [updateNodeColors]);
+
   // Update click handler to remove renderer references
   const handleClick = async (e) => {
     e.stopPropagation();
@@ -337,6 +409,30 @@ const PhylogeneticViewer = ({
     return () => {
       window.removeEventListener('keydown', handleKeyPress);
       window.removeEventListener('keyup', handleKeyPress);
+    };
+  }, []);
+
+  // Simplify hover state management
+  useEffect(() => {
+    if (!gRef.current) return;
+
+    d3.select(gRef.current)
+      .selectAll('.node-circle')
+      .on('mouseenter', function(event, d) {
+        console.log('Node mouseenter:', d.data.id);
+        d3.select(this).classed('hovered', true);
+      })
+      .on('mouseleave', function(event, d) {
+        console.log('Node mouseleave:', d.data.id);
+        d3.select(this).classed('hovered', false);
+      });
+  }, [treeData]);
+
+  // Add cleanup for hover timestamps on component unmount
+  useEffect(() => {
+    return () => {
+      hoverTimestampsRef.current.clear();
+      playingNodesRef.current.clear();
     };
   }, []);
 
@@ -478,12 +574,15 @@ const PhylogeneticViewer = ({
         </div>
 
         {!hasAudioInteraction && (
-        <div className="absolute inset-0 flex items-center justify-center bg-black/50 backdrop-blur-sm z-20">
-          <div className="bg-gray-800/90 px-4 py-3 rounded text-white text-sm">
-            Click anywhere to enable audio playback
-          </div>
-        </div>
-      )}
+          <>
+            <div className="absolute inset-0 flex items-center justify-center bg-black/50 backdrop-blur-sm z-20" />
+            <div className="absolute inset-0 flex items-center justify-center z-20">
+              <div className="bg-gray-800/90 px-4 py-3 rounded text-white text-sm">
+                Click anywhere to enable audio playback
+              </div>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
