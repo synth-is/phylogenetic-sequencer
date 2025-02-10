@@ -313,6 +313,7 @@ function MainApp() {
       ...DEFAULT_UNIT_CONFIGS[unitType]
     };
     setUnits([...units, newUnit]);
+    setSelectedUnitId(newUnit.id); // Add this line to select the new unit
   };
 
   const handleRemoveUnit = (id) => {

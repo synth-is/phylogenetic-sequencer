@@ -6,12 +6,14 @@ import { SequencingUnit } from '../units/SequencingUnit';  // Add this import
 import { CellDataFormatter } from '../utils/CellDataFormatter';
 import { useUnits } from '../UnitsContext';
 
-// Add Slider component
-const Slider = ({ label, value, onChange, min = 0, max = 1, step = 0.01 }) => (
+// Update Slider component to support centered visualization
+const Slider = ({ label, value, onChange, min = 0, max = 1, step = 0.01, centered = false }) => (
   <div className="space-y-1">
     <div className="flex justify-between text-xs">
       <span className="text-gray-300">{label}</span>
-      <span className="text-gray-400">{typeof value === 'number' ? value.toFixed(2) : '0.00'}</span>
+      <span className="text-gray-400">
+        {centered ? ((value - 0.5) * 2).toFixed(2) : value.toFixed(2)}
+      </span>
     </div>
     <input
       type="range"
@@ -20,7 +22,13 @@ const Slider = ({ label, value, onChange, min = 0, max = 1, step = 0.01 }) => (
       step={step}
       value={value || 0}
       onChange={(e) => onChange(parseFloat(e.target.value))}
-      className="w-full h-1.5 rounded-sm appearance-none bg-gray-700 [&::-webkit-slider-thumb]:w-2.5 [&::-webkit-slider-thumb]:h-2.5 [&::-webkit-slider-thumb]:rounded-sm [&::-webkit-slider-thumb]:bg-blue-500 [&::-webkit-slider-thumb]:appearance-none"
+      className={`w-full h-1.5 rounded-sm appearance-none bg-gray-700 
+        [&::-webkit-slider-thumb]:w-2.5 [&::-webkit-slider-thumb]:h-2.5 
+        [&::-webkit-slider-thumb]:rounded-sm [&::-webkit-slider-thumb]:bg-blue-500 
+        [&::-webkit-slider-thumb]:appearance-none`}
+      style={centered ? {
+        background: `linear-gradient(to right, #374151 50%, #374151 50%)`
+      } : {}}
     />
   </div>
 );
@@ -307,6 +315,8 @@ const UnitsPanel = ({
       isPlaying: sequencingUnit.isPlaying,
       sequence: sequencingUnit.activeSequence
     };
+
+    const groupedSequence = sequencingUnit.getGroupedSequence();
   
     return (
       <div className="mt-2 space-y-2">
@@ -326,80 +336,111 @@ const UnitsPanel = ({
           </button>
         </div>
   
-        {currentState.sequence.map((item, index) => (
+        {groupedSequence.map(group => (
           <div 
-            key={item.genomeId}
-            className="bg-gray-700/50 rounded-sm p-2 space-y-2"
+            key={group.offset}
+            onClick={() => {
+              sequencingUnit.selectTimestep(group.offset);
+              forceSequenceUpdate(unit.id);
+            }}
+            className={`border-l-2 pl-2 space-y-2 cursor-pointer transition-colors ${
+              group.isSelected 
+                ? 'border-blue-500 bg-blue-500/10' 
+                : 'border-gray-700 hover:border-blue-500/50 hover:bg-blue-500/5'
+            }`}
           >
-            <div className="flex items-center justify-between">
-              <span className="text-xs text-gray-300">
-                {item.genomeId.slice(-6)}
-              </span>
-              <button
-                onClick={() => {
-                  sequencingUnit.removeSequenceItem(item.genomeId);
-                  forceSequenceUpdate(unit.id);
-                }}
-                className="p-1 text-xs bg-red-600/50 hover:bg-red-600 text-white rounded"
-              >
-                ×
-              </button>
-            </div>
-            
-            <details className="text-xs">
-              <summary className="cursor-pointer hover:text-white">
-                Parameters
-              </summary>
-              <div className="pt-2 space-y-2">
-                <Slider 
-                  label="Offset"
-                  min={0}
-                  max={1}
-                  step={0.01}
-                  value={item.offset}
-                  onChange={val => {
-                    sequencingUnit.updateSequenceItem(item.genomeId, { offset: val });
-                    forceSequenceUpdate(unit.id); // Add this line
-                  }}
-                />
-                
-                <Slider 
-                  label="Duration"
-                  min={0.1}
-                  max={4}
-                  step={0.1}
-                  value={item.durationScale}
-                  onChange={val => {
-                    sequencingUnit.updateSequenceItem(item.genomeId, { durationScale: val });
-                    forceSequenceUpdate(unit.id); // Add this line
-                  }}
-                />
-                
-                <Slider 
-                  label="Pitch"
-                  min={-12}
-                  max={12}
-                  step={1}
-                  value={item.pitchShift}
-                  onChange={val => {
-                    sequencingUnit.updateSequenceItem(item.genomeId, { pitchShift: val });
-                    forceSequenceUpdate(unit.id); // Add this line
-                  }}
-                />
-                
-                <Slider 
-                  label="Stretch"
-                  min={0.25}
-                  max={4}
-                  step={0.25}
-                  value={item.stretch}
-                  onChange={val => {
-                    sequencingUnit.updateSequenceItem(item.genomeId, { stretch: val });
-                    forceSequenceUpdate(unit.id); // Add this line
-                  }}
-                />
+            <div className="flex items-center gap-2">
+              <div className="flex-1">
+                <span className="text-xs text-gray-400">
+                  Time: {group.offset.toFixed(2)}
+                </span>
+                <span className="text-xs text-gray-500 ml-2">
+                  ({group.items.length} sound{group.items.length !== 1 ? 's' : ''})
+                </span>
               </div>
-            </details>
+              <span className="text-xs text-gray-500">
+                {group.isSelected ? 'Click to deselect' : 'Click to select'}
+              </span>
+            </div>
+  
+            {/* Render individual items in group */}
+            {group.items.map(item => (
+              <div 
+                key={item.genomeId}
+                className="bg-gray-700/50 rounded-sm p-2 space-y-2"
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-gray-300">
+                    {item.genomeId.slice(-6)}
+                  </span>
+                  <button
+                    onClick={() => {
+                      sequencingUnit.removeSequenceItem(item.genomeId);
+                      forceSequenceUpdate(unit.id);
+                    }}
+                    className="p-1 text-xs bg-red-600/50 hover:bg-red-600 text-white rounded"
+                  >
+                    ×
+                  </button>
+                </div>
+                
+                <details className="text-xs">
+                  <summary className="cursor-pointer hover:text-white">
+                    Parameters
+                  </summary>
+                  <div className="pt-2 space-y-2">
+                    <Slider 
+                      label="Offset"
+                      min={0}
+                      max={1}
+                      step={0.01}
+                      value={item.offset}
+                      onChange={val => {
+                        sequencingUnit.updateSequenceItem(item.genomeId, { offset: val });
+                        forceSequenceUpdate(unit.id); // Add this line
+                      }}
+                      centered={true}  // Add this prop
+                    />
+                    
+                    <Slider 
+                      label="Duration"
+                      min={0.1}
+                      max={4}
+                      step={0.1}
+                      value={item.durationScale}
+                      onChange={val => {
+                        sequencingUnit.updateSequenceItem(item.genomeId, { durationScale: val });
+                        forceSequenceUpdate(unit.id); // Add this line
+                      }}
+                    />
+                    
+                    <Slider 
+                      label="Pitch"
+                      min={-12}
+                      max={12}
+                      step={1}
+                      value={item.pitchShift}
+                      onChange={val => {
+                        sequencingUnit.updateSequenceItem(item.genomeId, { pitchShift: val });
+                        forceSequenceUpdate(unit.id); // Add this line
+                      }}
+                    />
+                    
+                    <Slider 
+                      label="Stretch"
+                      min={0.25}
+                      max={4}
+                      step={0.25}
+                      value={item.stretch}
+                      onChange={val => {
+                        sequencingUnit.updateSequenceItem(item.genomeId, { stretch: val });
+                        forceSequenceUpdate(unit.id); // Add this line
+                      }}
+                    />
+                  </div>
+                </details>
+              </div>
+            ))}
           </div>
         ))}
       </div>

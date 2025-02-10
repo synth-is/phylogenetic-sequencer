@@ -7,7 +7,7 @@ export class SequencingUnit extends BaseUnit {
     super(id, UNIT_TYPES.SEQUENCING);
     this.sequence = [];
     this.tempo = 120;
-    this.isPlaying = false;
+    this.isPlaying = true;  // Change default to true
     this.currentStep = 0;
     this.audioDataCache = new Map();
     
@@ -18,7 +18,8 @@ export class SequencingUnit extends BaseUnit {
     this.startOffset = 0;
     this.bpm = 120;
     this.voiceNodes = new Map();
-    this.isPlaying = false;  // Add this explicitly
+    this.isPlaying = true;  // Change default to true
+    this.selectedTimestep = null; // Add this line
   }
 
   async initialize() {
@@ -98,40 +99,46 @@ export class SequencingUnit extends BaseUnit {
   toggleSequenceItem(cellData) {
     console.log('SequencingUnit.toggleSequenceItem called:', {
       unitId: this.id,
-      cellData
+      cellData,
+      selectedTimestep: this.selectedTimestep
     });
 
     const existingIndex = this.activeSequence.findIndex(item => 
       item.genomeId === cellData.genomeId
     );
 
-    console.log('Toggle sequence state:', {
-      unitId: this.id,
-      cellData,
-      existingIndex,
-      currentSequenceLength: this.activeSequence.length
-    });
-
     if (existingIndex >= 0) {
       // Remove item
       this.activeSequence.splice(existingIndex, 1);
     } else {
-      // Add new item with default parameters
+      // Add new item
+      const existingOffset = this.selectedTimestep !== null ? 
+        this.selectedTimestep : 
+        this.activeSequence.length > 0 ? 
+          Math.max(...this.activeSequence.map(item => item.step || 0)) + 1 : 
+          0;
+
       this.activeSequence.push({
         ...cellData,
-        offset: 0,           // Time offset within sequence
-        durationScale: 1,    // Duration multiplier
-        pitchShift: 0,      // Semitones
-        stretch: 1,          // Time stretch factor
-        step: this.activeSequence.length  // Position in sequence
+        step: existingOffset,     // Use step for group position
+        offset: 0.5,              // Set default offset to 0.5 (neutral position)
+        durationScale: 1,
+        pitchShift: 0,
+        stretch: 1
+      });
+
+      // Start playing if this is the first item added
+      if (!this.isPlaying && this.activeSequence.length === 1) {
+        this.play();
+      }
+
+      console.log('Added new item to sequence:', {
+        genomeId: cellData.genomeId,
+        offset: existingOffset,
+        selectedTimestep: this.selectedTimestep,
+        groupSize: this.activeSequence.filter(item => item.offset === existingOffset).length
       });
     }
-
-    console.log('Sequence after toggle:', {
-      unitId: this.id,
-      sequenceLength: this.activeSequence.length,
-      sequence: this.activeSequence
-    });
 
     this.updateSequencer();
   }
@@ -196,51 +203,71 @@ export class SequencingUnit extends BaseUnit {
       }
     }
 
-    const sequenceDuration = (60 / this.bpm) * 4 * this.bars; // Duration in seconds
-    const time = el.div(el.time(), el.sr()); // Current time in seconds
-    const times = this.getTimes(); // Get evenly spaced positions
-
-    // Create array of sample sequencers
-    const voices = this.activeSequence.map((item, index) => {
-      const vfsKey = `seq-${this.id}-${item.genomeId}`;
-      const audioData = this.audioDataCache.get(vfsKey);
-      if (!audioData) return null;
-
-      // Calculate timing using the spacing algorithm from test-component.js
-      const startTime = this.startOffset * sequenceDuration + 
-                       times[index] * (1 - this.startOffset) * sequenceDuration;
-      const duration = audioData.duration * item.durationScale;
-
-      // Create trigger signal using sampleseq2
-      try {
-        return el.mul(
-          el.sampleseq2({
-            path: vfsKey,
-            duration: duration,
-            seq: [
-              { time: startTime, value: 1 },
-              { time: startTime + duration, value: 0 }
-            ],
-            shift: item.pitchShift,
-            stretch: item.stretch
-          }, 
-          el.mod(time, el.const({ value: sequenceDuration }))
-        ),
-        el.const({ value: 1 / Math.max(1, this.activeSequence.length) })
-        );
-      } catch (error) {
-        console.error('Failed to create sample sequencer:', error);
-        return null;
+    const sequenceDuration = (60 / this.bpm) * 4 * this.bars;
+    const time = el.div(el.time(), el.sr());
+    
+    // Group items by step position
+    const groupedItems = new Map();
+    this.activeSequence.forEach(item => {
+      const step = item.step || 0;
+      if (!groupedItems.has(step)) {
+        groupedItems.set(step, []);
       }
-    }).filter(Boolean);
+      groupedItems.get(step).push(item);
+    });
+
+    // Calculate timing positions for groups
+    const steps = Array.from(groupedItems.keys()).sort((a, b) => a - b);
+    const totalSteps = Math.max(...steps) + 1;
+    
+    // Create voices for each group
+    const voices = [];
+    steps.forEach((step, index) => {
+      const items = groupedItems.get(step);
+      const stepTime = this.startOffset * sequenceDuration + 
+                      (step / totalSteps) * (1 - this.startOffset) * sequenceDuration;
+
+      items.forEach(item => {
+        const vfsKey = `seq-${this.id}-${item.genomeId}`;
+        const audioData = this.audioDataCache.get(vfsKey);
+        if (!audioData) return;
+
+        // Calculate relative offset from center (0.5)
+        const relativeOffset = (item.offset - 0.5) * (sequenceDuration / totalSteps);
+        const startTime = stepTime + relativeOffset;
+        const duration = audioData.duration * item.durationScale;
+
+        try {
+          const voice = el.mul(
+            el.sampleseq2({
+              path: vfsKey,
+              duration: duration,
+              seq: [
+                { time: startTime, value: 1 },
+                { time: startTime + duration, value: 0 }
+              ],
+              shift: item.pitchShift,
+              stretch: item.stretch
+            }, 
+            el.mod(time, el.const({ value: sequenceDuration }))
+          ),
+          el.const({ value: 1 / Math.max(1, items.length) }) // Scale by group size
+          );
+          voices.push(voice);
+        } catch (error) {
+          console.error('Failed to create sample sequencer:', error);
+        }
+      });
+    });
 
     console.log('Created sequence voices:', {
       unitId: this.id,
       voiceCount: voices.length,
-      bpm: this.bpm,
-      bars: this.bars,
-      times,
-      sequenceDuration
+      groupCount: groupedItems.size,
+      groups: Array.from(groupedItems.entries()).map(([offset, items]) => ({
+        offset,
+        itemCount: items.length
+      }))
     });
 
     return voices;
@@ -284,5 +311,29 @@ export class SequencingUnit extends BaseUnit {
     this.audioDataCache.clear();
     this.voiceNodes.clear();
     super.cleanup();
+  }
+
+  // Add method to get groups with step-based offsets
+  getGroupedSequence() {
+    const groups = new Map();
+    this.activeSequence.forEach(item => {
+      const step = item.step || 0;
+      if (!groups.has(step)) {
+        groups.set(step, []);
+      }
+      groups.get(step).push(item);
+    });
+
+    return Array.from(groups.entries()).map(([step, items]) => ({
+      offset: step,
+      items,
+      isSelected: step === this.selectedTimestep
+    })).sort((a, b) => a.offset - b.offset);
+  }
+
+  // Add method to select a timestep
+  selectTimestep(offset) {
+    this.selectedTimestep = this.selectedTimestep === offset ? null : offset;
+    return this.selectedTimestep;
   }
 }
