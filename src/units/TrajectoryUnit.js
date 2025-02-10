@@ -1,13 +1,11 @@
-import WebRenderer from '@elemaudio/web-renderer';
 import {el} from '@elemaudio/core';
 import { UNIT_TYPES } from '../constants';
+import { BaseUnit } from './BaseUnit';
 
-export class TrajectoryUnit {
+export class TrajectoryUnit extends BaseUnit {
   constructor(id) {
-    this.id = id;
-    this.type = UNIT_TYPES.TRAJECTORY;
-    this.renderer = null;
-    this.context = null;
+    super(id, UNIT_TYPES.TRAJECTORY);
+    // Remove renderer and context as they're now handled by AudioEngine
     this.active = true;
     this.muted = false;
     this.soloed = false;
@@ -55,40 +53,35 @@ export class TrajectoryUnit {
   async initialize() {
     try {
       console.log(`Initializing TrajectoryUnit ${this.id}`);
-      const context = new AudioContext();
-      await context.resume();
+      await super.initialize(); // This initializes AudioEngine
       
-      const core = new WebRenderer();
-      const node = await core.initialize(context, {
-        numberOfInputs: 0,
-        numberOfOutputs: 1,
-        outputChannelCount: [2],
-      });
-      
-      node.connect(context.destination);
-      
-      this.renderer = core;
-      this.context = context;
+      // Get references from AudioEngine
+      const context = this.audioEngine.getContext();
+      const renderer = this.audioEngine.getRenderer();
+
+      if (!context || !renderer) {
+        throw new Error('AudioEngine not properly initialized');
+      }
 
       // Load impulse response for reverb
       try {
         const irResponse = await fetch('/WIDEHALL-1.wav');  // Updated path to match HeatmapViewer
         if (!irResponse.ok) throw new Error(`HTTP error! status: ${irResponse.status}`);
         const irArrayBuffer = await irResponse.arrayBuffer();
-        const irAudioBuffer = await this.context.decodeAudioData(irArrayBuffer);
+        const irAudioBuffer = await context.decodeAudioData(irArrayBuffer);
         
         // Update VFS with impulse response
         const vfsUpdate = {
           'reverb-ir': irAudioBuffer.getChannelData(0)
         };
-        await this.renderer.updateVirtualFileSystem(vfsUpdate);
+        await renderer.updateVirtualFileSystem(vfsUpdate);
         console.log(`TrajectoryUnit ${this.id} loaded reverb IR successfully`);
       } catch (irError) {
         console.warn(`TrajectoryUnit ${this.id} failed to load reverb IR:`, irError);
         // Create a minimal IR if loading fails
         const minimalIR = new Float32Array(4096).fill(0);
         minimalIR[0] = 1;
-        await this.renderer.updateVirtualFileSystem({
+        await renderer.updateVirtualFileSystem({
           'reverb-ir': minimalIR
         });
       }
@@ -107,13 +100,21 @@ export class TrajectoryUnit {
       id: this.id,
       active: this.active,
       muted: this.muted,
-      hasRenderer: !!this.renderer,
       cellData,
-      hasCallback: !!cellData?.config?.onEnded,  // Add this debug log
+      hasCallback: !!cellData?.config?.onEnded,
       playbackMode: this.playbackMode
     });
   
-    if (!this.active || this.muted || !this.renderer || !cellData) {
+    if (!this.active || this.muted || !cellData) {
+      return;
+    }
+
+    // Get AudioEngine instances
+    const context = this.audioEngine.getContext();
+    const renderer = this.audioEngine.getRenderer();
+    
+    if (!context || !renderer) {
+      console.error('AudioEngine not properly initialized');
       return;
     }
   
@@ -132,6 +133,13 @@ export class TrajectoryUnit {
     this.lastHoverTimes.set(genomeId, now);
   
     try {
+      const context = this.audioEngine.getContext();
+      const renderer = this.audioEngine.getRenderer();
+      
+      if (!context || !renderer) {
+        throw new Error('AudioEngine not properly initialized');
+      }
+
       const vfsKey = `sound-${genomeId}`;
       let audioData;
   
@@ -139,7 +147,7 @@ export class TrajectoryUnit {
         const response = await fetch(audioUrl);
         if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
         const arrayBuffer = await response.arrayBuffer();
-        audioData = await this.context.decodeAudioData(arrayBuffer);
+        audioData = await context.decodeAudioData(arrayBuffer);
         this.audioDataCache.set(vfsKey, audioData);
       } else {
         audioData = this.audioDataCache.get(vfsKey);
@@ -148,7 +156,7 @@ export class TrajectoryUnit {
       // Ensure sample is in VFS
       const vfsUpdate = {};
       vfsUpdate[vfsKey] = audioData.getChannelData(0);
-      await this.renderer.updateVirtualFileSystem(vfsUpdate);
+      await renderer.updateVirtualFileSystem(vfsUpdate);
 
       // Clear any existing highlight timeout for this genome
       if (this.highlightTimeouts.has(genomeId)) {
@@ -362,8 +370,8 @@ export class TrajectoryUnit {
       mix = mix ? el.add(mix, trajectoryMix) : trajectoryMix;
     }
 
-    // Render final mix
-    this.renderer.render(mix, mix);
+    // Instead of directly rendering, update nodes in AudioEngine
+    this.updateAudioNodes(mix ? [mix] : []);
   }
 
   // Update config method to handle playback mode
@@ -399,9 +407,7 @@ export class TrajectoryUnit {
   }
 
   cleanup() {
-    if (this.context?.state !== 'closed') {
-      this.context?.close();
-    }
+    // Remove context.close() since AudioEngine manages the context
     if (this.throttleTimeout) {
       clearTimeout(this.throttleTimeout);
     }
@@ -443,6 +449,9 @@ export class TrajectoryUnit {
     this.isRecording = false;
     this.currentRecordingId = null;
     this.recordingStartTime = null;
+
+    // Make sure to call parent cleanup to remove nodes from AudioEngine
+    super.cleanup();
   }
 
   // Add method to check if a genome has active voices
@@ -532,6 +541,13 @@ export class TrajectoryUnit {
     trajectory.isPlaying = true;
 
     try {
+      const context = this.audioEngine.getContext();
+      const renderer = this.audioEngine.getRenderer();
+      
+      if (!context || !renderer) {
+        throw new Error('AudioEngine not properly initialized');
+      }
+
       // Ensure all samples are loaded in VFS first
       for (const event of trajectory.events) {
         if (event.cellData && event.cellData.audioUrl) {
@@ -541,13 +557,13 @@ export class TrajectoryUnit {
             const response = await fetch(event.cellData.audioUrl);
             if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
             const arrayBuffer = await response.arrayBuffer();
-            const audioData = await this.context.decodeAudioData(arrayBuffer);
+            const audioData = await context.decodeAudioData(arrayBuffer);
             this.audioDataCache.set(vfsKey, audioData);
             
             // Update VFS
             const vfsUpdate = {};
             vfsUpdate[vfsKey] = audioData.getChannelData(0);
-            await this.renderer.updateVirtualFileSystem(vfsUpdate);
+            await renderer.updateVirtualFileSystem(vfsUpdate);
           }
         }
       }

@@ -7,7 +7,8 @@ note("c2 <eb2 <g2 g1>>".fast(2))
 export const LINEAGE_SOUNDS_BUCKET_HOST = "https://ns9648k.web.sigma2.no";
 
 export const UNIT_TYPES = {
-  TRAJECTORY: 'Trajectory',
+  TRAJECTORY: 'trajectory',
+  SEQUENCING: 'sequencing',
   SEQUENCE: 'Sequence',
   LIVE_CODE: 'Live Code'
 };
