@@ -137,19 +137,26 @@ const PhylogeneticViewer = ({
   const handleNodeClick = useCallback((event, d) => {
     if (!hasAudioInteraction || !onCellHover) return;
     
-    // Mark node as stopping before clearing playing state
-    d3.select(event.target).classed('stopping', true);
-    setNodePlaying(d.data.id, false);
+    event.stopPropagation();
+    event.preventDefault();
+    
+    console.log('Node clicked:', {
+      nodeId: d.data.id,
+      data: d.data
+    });
     
     onCellHover({
       data: d.data,
       experiment,
       evoRunId,
       config: {
-        stopLoop: true
+        addToSequence: true,
+        duration: d.data.duration,
+        noteDelta: d.data.noteDelta,
+        velocity: d.data.velocity
       }
     });
-  }, [experiment, evoRunId, hasAudioInteraction, onCellHover, setNodePlaying]);
+  }, [experiment, evoRunId, hasAudioInteraction, onCellHover]);
 
   // Initialize D3 visualization
   useEffect(() => {
@@ -244,7 +251,7 @@ const PhylogeneticViewer = ({
           downloadNodeSound(d);
         }
       })
-      .on("click", handleNodeClick); // Add click handler
+      .on("click", handleNodeClick); // Use the updated click handler
 
     treeInitializedRef.current = true;
 

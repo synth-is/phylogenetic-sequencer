@@ -2,8 +2,28 @@ import { Volume2, Plus } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { UNIT_TYPES } from '../constants';
 import { TrajectoryUnit } from '../units/TrajectoryUnit';
+import { SequencingUnit } from '../units/SequencingUnit';  // Add this import
 import { CellDataFormatter } from '../utils/CellDataFormatter';
 import { useUnits } from '../UnitsContext';
+
+// Add Slider component
+const Slider = ({ label, value, onChange, min = 0, max = 1, step = 0.01 }) => (
+  <div className="space-y-1">
+    <div className="flex justify-between text-xs">
+      <span className="text-gray-300">{label}</span>
+      <span className="text-gray-400">{typeof value === 'number' ? value.toFixed(2) : '0.00'}</span>
+    </div>
+    <input
+      type="range"
+      min={min}
+      max={max}
+      step={step}
+      value={value || 0}
+      onChange={(e) => onChange(parseFloat(e.target.value))}
+      className="w-full h-1.5 rounded-sm appearance-none bg-gray-700 [&::-webkit-slider-thumb]:w-2.5 [&::-webkit-slider-thumb]:h-2.5 [&::-webkit-slider-thumb]:rounded-sm [&::-webkit-slider-thumb]:bg-blue-500 [&::-webkit-slider-thumb]:appearance-none"
+    />
+  </div>
+);
 
 const UnitTypeSelector = ({ onSelect, onClose }) => (
   <div className="absolute bottom-12 left-0 right-0 mx-2 bg-gray-800 rounded-sm shadow-lg overflow-hidden">
@@ -53,20 +73,27 @@ const UnitsPanel = ({
   useEffect(() => {
     units.forEach(async unit => {
       if (!unitsRef.current.has(unit.id)) {
+        let unitInstance;
         if (unit.type === UNIT_TYPES.TRAJECTORY) {
           console.log('Creating new TrajectoryUnit:', unit.id);
-          const trajectoryUnit = new TrajectoryUnit(unit.id);
-          await trajectoryUnit.initialize();
-          unitsRef.current.set(unit.id, trajectoryUnit);
+          unitInstance = new TrajectoryUnit(unit.id);
+        } else if (unit.type === UNIT_TYPES.SEQUENCING) {
+          console.log('Creating new SequencingUnit:', unit.id);
+          unitInstance = new SequencingUnit(unit.id);
+        }
+        
+        if (unitInstance) {
+          await unitInstance.initialize();
+          unitsRef.current.set(unit.id, unitInstance);
         }
       }
     });
 
     // Update existing units' configuration
     units.forEach(unit => {
-      const trajectoryUnit = unitsRef.current.get(unit.id);
-      if (trajectoryUnit) {
-        trajectoryUnit.updateConfig(unit);
+      const unitInstance = unitsRef.current.get(unit.id);
+      if (unitInstance) {
+        unitInstance.updateConfig?.(unit);
       }
     });
 
@@ -98,9 +125,21 @@ const UnitsPanel = ({
     );
   
     if (formattedData) {
-      const trajectoryUnit = unitsRef.current.get(selectedUnitId);
-      if (trajectoryUnit && trajectoryUnit.type === UNIT_TYPES.TRAJECTORY) {
-        trajectoryUnit.handleCellHover(formattedData);
+      const unit = unitsRef.current.get(selectedUnitId);
+      if (!unit) return;
+  
+      console.log('Processing cell hover:', {
+        unitType: unit.type,
+        addToSequence: onCellHover.config?.addToSequence,
+        formattedData
+      });
+
+      if (unit.type === UNIT_TYPES.TRAJECTORY) {
+        unit.handleCellHover(formattedData);
+      } else if (unit.type === UNIT_TYPES.SEQUENCING && onCellHover.config?.addToSequence) {
+        console.log('Toggling sequence item for unit:', selectedUnitId);
+        unit.toggleSequenceItem(formattedData);
+        forceSequenceUpdate(selectedUnitId); // Force UI update after sequence change
       }
     }
   }, [selectedUnitId, onCellHover]);
@@ -242,6 +281,140 @@ const UnitsPanel = ({
     );
   };
 
+  // Add state for sequence updates
+  const [sequenceStates, setSequenceStates] = useState(new Map());
+
+  // Add function to force sequence UI updates
+  const forceSequenceUpdate = (unitId) => {
+    const sequencingUnit = unitsRef.current.get(unitId);
+    if (!sequencingUnit || sequencingUnit.type !== UNIT_TYPES.SEQUENCING) return;
+
+    setSequenceStates(prev => new Map(prev).set(unitId, {
+      isPlaying: sequencingUnit.isPlaying,
+      sequence: [...sequencingUnit.activeSequence] // Create new array to force re-render
+    }));
+  };
+
+  // Modify the renderSequenceControls function
+  const renderSequenceControls = (unit) => {
+    if (unit.type !== UNIT_TYPES.SEQUENCING) return null;
+  
+    const sequencingUnit = unitsRef.current.get(unit.id);
+    if (!sequencingUnit) return null;
+
+    // Get state from our sequenceStates or use unit's current state
+    const currentState = sequenceStates.get(unit.id) || {
+      isPlaying: sequencingUnit.isPlaying,
+      sequence: sequencingUnit.activeSequence
+    };
+  
+    return (
+      <div className="mt-2 space-y-2">
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => {
+              sequencingUnit.togglePlayback();
+              forceSequenceUpdate(unit.id);
+            }}
+            className={`px-2 py-1 text-xs rounded ${
+              currentState.isPlaying
+                ? 'bg-red-600 text-white'
+                : 'bg-blue-600 text-white'
+            }`}
+          >
+            {currentState.isPlaying ? 'Stop Sequence' : 'Play Sequence'}
+          </button>
+        </div>
+  
+        {currentState.sequence.map((item, index) => (
+          <div 
+            key={item.genomeId}
+            className="bg-gray-700/50 rounded-sm p-2 space-y-2"
+          >
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-gray-300">
+                {item.genomeId.slice(-6)}
+              </span>
+              <button
+                onClick={() => {
+                  sequencingUnit.removeSequenceItem(item.genomeId);
+                  forceSequenceUpdate(unit.id);
+                }}
+                className="p-1 text-xs bg-red-600/50 hover:bg-red-600 text-white rounded"
+              >
+                ×
+              </button>
+            </div>
+            
+            <details className="text-xs">
+              <summary className="cursor-pointer hover:text-white">
+                Parameters
+              </summary>
+              <div className="pt-2 space-y-2">
+                <Slider 
+                  label="Offset"
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  value={item.offset}
+                  onChange={val => {
+                    sequencingUnit.updateSequenceItem(item.genomeId, { offset: val });
+                    forceSequenceUpdate(unit.id); // Add this line
+                  }}
+                />
+                
+                <Slider 
+                  label="Duration"
+                  min={0.1}
+                  max={4}
+                  step={0.1}
+                  value={item.durationScale}
+                  onChange={val => {
+                    sequencingUnit.updateSequenceItem(item.genomeId, { durationScale: val });
+                    forceSequenceUpdate(unit.id); // Add this line
+                  }}
+                />
+                
+                <Slider 
+                  label="Pitch"
+                  min={-12}
+                  max={12}
+                  step={1}
+                  value={item.pitchShift}
+                  onChange={val => {
+                    sequencingUnit.updateSequenceItem(item.genomeId, { pitchShift: val });
+                    forceSequenceUpdate(unit.id); // Add this line
+                  }}
+                />
+                
+                <Slider 
+                  label="Stretch"
+                  min={0.25}
+                  max={4}
+                  step={0.25}
+                  value={item.stretch}
+                  onChange={val => {
+                    sequencingUnit.updateSequenceItem(item.genomeId, { stretch: val });
+                    forceSequenceUpdate(unit.id); // Add this line
+                  }}
+                />
+              </div>
+            </details>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
+  // Update effect to initialize sequence states
+  useEffect(() => {
+    units.forEach(unit => {
+      if (unit.type === UNIT_TYPES.SEQUENCING) {
+        forceSequenceUpdate(unit.id);
+      }
+    });
+  }, [units]);
+
   return (
     <div className="h-fit bg-gray-900/95 backdrop-blur border-r border-gray-800">
       <div className="p-2 flex flex-col gap-2 min-w-[16rem]">
@@ -322,7 +495,12 @@ const UnitsPanel = ({
                 </div>
               </div>
             </div>
-            {unit.id === selectedUnitId && renderTrajectoryControls(unit)}
+            {unit.id === selectedUnitId && (
+              <>
+                {renderTrajectoryControls(unit)}
+                {renderSequenceControls(unit)}
+              </>
+            )}
           </div>
         ))}
         

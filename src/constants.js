@@ -7,10 +7,8 @@ note("c2 <eb2 <g2 g1>>".fast(2))
 export const LINEAGE_SOUNDS_BUCKET_HOST = "https://ns9648k.web.sigma2.no";
 
 export const UNIT_TYPES = {
-  TRAJECTORY: 'trajectory',
-  SEQUENCING: 'sequencing',
-  SEQUENCE: 'Sequence',
-  LIVE_CODE: 'Live Code'
+  TRAJECTORY: 'TRAJECTORY',
+  SEQUENCING: 'SEQUENCING'
 };
 
 export const DEFAULT_UNIT_CONFIGS = {
@@ -23,13 +21,14 @@ export const DEFAULT_UNIT_CONFIGS = {
     muted: false,
     soloed: false
   },
-  [UNIT_TYPES.SEQUENCE]: {
-    pattern: '1/4',
-    steps: 8,
-    volume: -10,
+  [UNIT_TYPES.SEQUENCING]: {
     active: true,
     muted: false,
-    soloed: false
+    soloed: false,
+    volume: -12,
+    bars: 4,
+    bpm: 120,
+    startOffset: 0
   },
   [UNIT_TYPES.LIVE_CODE]: {
     strudelCode: DEFAULT_STRUDEL_CODE,

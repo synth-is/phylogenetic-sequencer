@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { X, Code, Play, Square, RefreshCw, Bug, ChevronUp, ChevronDown } from 'lucide-react';
 import StrudelEditor from './StrudelEditor';
 import ChuckEditor from './ChuckEditor';
-import { DEFAULT_STRUDEL_CODE } from '../constants';
+import { DEFAULT_STRUDEL_CODE, UNIT_TYPES } from '../constants';
 import '@strudel/repl';
 import { useStrudelPattern } from './useStrudelPattern';
 
@@ -237,6 +237,43 @@ const UnitConfigPanel = ({ unit, units, onClose, onUpdateUnit }) => {
                   label="Prob. New Tree" 
                   value={unit.probNewTree || 0} 
                   onChange={val => handleValueChange('probNewTree', val)} 
+                />
+              </CollapsibleSection>
+            </>
+          )}
+
+          {activeTab === 'Unit' && unit.type === UNIT_TYPES.SEQUENCING && (
+            <>
+              <CollapsibleSection title="Sequence Settings">
+                <div className="space-y-2">
+                  <label className="text-sm text-white">Bars</label>
+                  <select
+                    value={unit.bars}
+                    onChange={(e) => onUpdateUnit(unit.id, { ...unit, bars: Number(e.target.value) })}
+                    className="w-full bg-gray-800 text-white p-2 rounded text-sm"
+                  >
+                    {[1, 2, 4, 8, 16].map(num => (
+                      <option key={num} value={num}>{num}</option>
+                    ))}
+                  </select>
+                </div>
+                
+                <Slider 
+                  label="Start Offset" 
+                  value={unit.startOffset} 
+                  onChange={val => onUpdateUnit(unit.id, { ...unit, startOffset: val })} 
+                  min={0}
+                  max={4}
+                  step={0.25}
+                />
+                
+                <Slider 
+                  label="BPM" 
+                  value={unit.bpm} 
+                  onChange={val => onUpdateUnit(unit.id, { ...unit, bpm: val })} 
+                  min={60}
+                  max={200}
+                  step={1}
                 />
               </CollapsibleSection>
             </>
