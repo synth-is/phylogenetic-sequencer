@@ -173,49 +173,43 @@ const UnitConfigPanel = ({ unit, units, onClose, onUpdateUnit }) => {
         <div className="p-4 overflow-y-auto">
           {activeTab === 'Unit' && (
             <>
-              <CollapsibleSection title="Playback">
-                <div className="space-y-2">
-                  <label className="text-sm text-white">Mode</label>
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => handleValueChange('playbackMode', 'one-off')}
-                      className={`flex-1 px-2 py-1 rounded text-xs ${
-                        (!unit.playbackMode || unit.playbackMode === 'one-off')  // Update condition here
-                          ? 'bg-blue-600 text-white'
-                          : 'bg-gray-700 text-gray-400'
-                      }`}
-                    >
-                      One-Off
-                    </button>
-                    <button
-                      onClick={() => handleValueChange('playbackMode', 'looping')}
-                      className={`flex-1 px-2 py-1 rounded text-xs ${
-                        unit.playbackMode === 'looping'
-                          ? 'bg-blue-600 text-white'
-                          : 'bg-gray-700 text-gray-400'
-                      }`}
-                    >
-                      Looping
-                    </button>
+              {/* Only show Playback section for TrajectoryUnit */}
+              {unit.type === UNIT_TYPES.TRAJECTORY && (
+                <CollapsibleSection title="Playback">
+                  <div className="space-y-2">
+                    <label className="text-sm text-white">Mode</label>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => handleValueChange('playbackMode', 'one-off')}
+                        className={`flex-1 px-2 py-1 rounded text-xs ${
+                          (!unit.playbackMode || unit.playbackMode === 'one-off')
+                            ? 'bg-blue-600 text-white'
+                            : 'bg-gray-700 text-gray-400'
+                        }`}
+                      >
+                        One-Off
+                      </button>
+                      <button
+                        onClick={() => handleValueChange('playbackMode', 'looping')}
+                        className={`flex-1 px-2 py-1 rounded text-xs ${
+                          unit.playbackMode === 'looping'
+                            ? 'bg-blue-600 text-white'
+                            : 'bg-gray-700 text-gray-400'
+                        }`}
+                      >
+                        Looping
+                      </button>
+                    </div>
+                    <p className="text-xs text-gray-400">
+                      {unit.playbackMode === 'looping' 
+                        ? 'Hover over nodes to loop sounds; hover again to stop the looping'
+                        : 'Hover nodes to play sounds once'}
+                    </p>
                   </div>
-                  <p className="text-xs text-gray-400">
-                    {unit.playbackMode === 'looping' 
-                      ? 'Hover over nodes to loop sounds; hover again to stop the looping'
-                      : 'Hover nodes to play sounds once'}
-                  </p>
-                </div>
-              </CollapsibleSection>
+                </CollapsibleSection>
+              )}
 
-              <CollapsibleSection title="Sequence">
-                <Slider 
-                  label="Speed" 
-                  value={unit.speed || 0} 
-                  onChange={val => handleValueChange('speed', val)} 
-                  min={-2} 
-                  max={2} 
-                  centered={true}
-                />
-              </CollapsibleSection>
+              {/* Remove Sequence section with Speed slider for both unit types */}
               
               <CollapsibleSection title="Evolution">
                 <Slider 
@@ -248,13 +242,16 @@ const UnitConfigPanel = ({ unit, units, onClose, onUpdateUnit }) => {
                 <div className="space-y-2">
                   <label className="text-sm text-white">Bars</label>
                   <select
-                    value={unit.bars}
+                    value={unit.bars || 1} // Default to 1 bar
                     onChange={(e) => onUpdateUnit(unit.id, { ...unit, bars: Number(e.target.value) })}
                     className="w-full bg-gray-800 text-white p-2 rounded text-sm"
                   >
-                    {[1, 2, 4, 8, 16].map(num => (
-                      <option key={num} value={num}>{num}</option>
-                    ))}
+                    <option value={0.25}>1/4 bar</option>
+                    <option value={0.5}>1/2 bar</option>
+                    <option value={1}>1 bar</option>
+                    <option value={2}>2 bars</option>
+                    <option value={4}>4 bars</option>
+                    <option value={8}>8 bars</option>
                   </select>
                 </div>
                 
@@ -271,8 +268,8 @@ const UnitConfigPanel = ({ unit, units, onClose, onUpdateUnit }) => {
                   label="BPM" 
                   value={unit.bpm} 
                   onChange={val => onUpdateUnit(unit.id, { ...unit, bpm: val })} 
-                  min={60}
-                  max={200}
+                  min={10}
+                  max={300}
                   step={1}
                 />
               </CollapsibleSection>

@@ -308,22 +308,32 @@ function MainApp() {
 
   const handleAddUnit = (unitType) => {
     const newUnit = {
-      id: units.length + 1,
+      id: Date.now(), // Use timestamp for unique IDs
       type: unitType,
       ...DEFAULT_UNIT_CONFIGS[unitType]
     };
     setUnits([...units, newUnit]);
-    setSelectedUnitId(newUnit.id); // Add this line to select the new unit
+    setSelectedUnitId(newUnit.id);
   };
 
   const handleRemoveUnit = (id) => {
-    setUnits(prevUnits => {
-      const remainingUnits = prevUnits.filter(unit => unit.id !== id);
-      return remainingUnits.map((unit, index) => ({ ...unit, id: index + 1 }));
+    console.log('App: handleRemoveUnit called:', {
+      unitToRemove: id,
+      currentUnits: units.map(u => ({ id: u.id, type: u.type })),
+      selectedUnitId
     });
-    if (selectedUnitId === id) {
-      setSelectedUnitId(null);
-    }
+
+    setUnits(prevUnits => {
+      // Simply filter out the removed unit, no reindexing
+      const remainingUnits = prevUnits.filter(unit => unit.id !== id);
+      
+      // Update selected unit ID if we removed the selected unit
+      if (selectedUnitId === id) {
+        setSelectedUnitId(remainingUnits.length > 0 ? remainingUnits[0].id : null);
+      }
+      
+      return remainingUnits;
+    });
   };
 
   const handleToggleState = (id, state) => {

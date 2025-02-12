@@ -7,7 +7,7 @@ import { CellDataFormatter } from '../utils/CellDataFormatter';
 import { useUnits } from '../UnitsContext';
 
 // Update Slider component to support centered visualization
-const Slider = ({ label, value, onChange, min = 0, max = 1, step = 0.01, centered = false }) => (
+const Slider = ({ label, value, onChange, onMouseUp, min = 0, max = 1, step = 0.01, centered = false }) => (
   <div className="space-y-1">
     <div className="flex justify-between text-xs">
       <span className="text-gray-300">{label}</span>
@@ -22,6 +22,8 @@ const Slider = ({ label, value, onChange, min = 0, max = 1, step = 0.01, centere
       step={step}
       value={value || 0}
       onChange={(e) => onChange(parseFloat(e.target.value))}
+      onMouseUp={onMouseUp}
+      onTouchEnd={onMouseUp}
       className={`w-full h-1.5 rounded-sm appearance-none bg-gray-700 
         [&::-webkit-slider-thumb]:w-2.5 [&::-webkit-slider-thumb]:h-2.5 
         [&::-webkit-slider-thumb]:rounded-sm [&::-webkit-slider-thumb]:bg-blue-500 
@@ -34,7 +36,7 @@ const Slider = ({ label, value, onChange, min = 0, max = 1, step = 0.01, centere
 );
 
 const UnitTypeSelector = ({ onSelect, onClose }) => (
-  <div className="absolute bottom-12 left-0 right-0 mx-2 bg-gray-800 rounded-sm shadow-lg overflow-hidden">
+  <div className="fixed bottom-16 left-4 right-4 mx-2 bg-gray-800 rounded-sm shadow-lg overflow-hidden z-50">
     {Object.values(UNIT_TYPES).map(type => (
       <button
         key={type}
@@ -79,18 +81,39 @@ const UnitsPanel = ({
 
   // Initialize new units
   useEffect(() => {
+    // Create new units first
     units.forEach(async unit => {
       if (!unitsRef.current.has(unit.id)) {
+        console.log('Creating new unit:', {
+          id: unit.id,
+          type: unit.type,
+          currentUnits: units.map(u => ({ id: u.id, type: u.type })),
+          existingInstances: Array.from(unitsRef.current.entries()).map(([id, instance]) => ({
+            id,
+            type: instance.type,
+            hasTrajectories: instance.trajectories?.size > 0
+          }))
+        });
+
         let unitInstance;
         if (unit.type === UNIT_TYPES.TRAJECTORY) {
-          console.log('Creating new TrajectoryUnit:', unit.id);
           unitInstance = new TrajectoryUnit(unit.id);
+          await unitInstance.initialize();
+          unitsRef.current.set(unit.id, unitInstance);
+          
+          // Initialize trajectory state immediately for new trajectory units
+          setTrajectoryStates(prev => {
+            const newState = new Map(prev);
+            newState.set(unit.id, []);  // Set empty trajectories array
+            return newState;
+          });
+          
+          setRecordingStatus(prev => ({
+            ...prev,
+            [unit.id]: false  // Initialize recording status
+          }));
         } else if (unit.type === UNIT_TYPES.SEQUENCING) {
-          console.log('Creating new SequencingUnit:', unit.id);
           unitInstance = new SequencingUnit(unit.id);
-        }
-        
-        if (unitInstance) {
           await unitInstance.initialize();
           unitsRef.current.set(unit.id, unitInstance);
         }
@@ -105,13 +128,34 @@ const UnitsPanel = ({
       }
     });
 
-    // Cleanup removed units
-    Array.from(unitsRef.current.keys()).forEach(id => {
-      if (!units.find(u => u.id === id)) {
-        console.log('Cleaning up TrajectoryUnit:', id);
-        unitsRef.current.get(id).cleanup();
-        unitsRef.current.delete(id);
-      }
+    // Find units to clean up
+    const currentIds = Array.from(unitsRef.current.keys());
+    const newIds = units.map(u => u.id);
+    const idsToRemove = currentIds.filter(id => !newIds.includes(id));
+
+    // Clean up removed units before reindexing
+    idsToRemove.forEach(id => {
+      const unitInstance = unitsRef.current.get(id);
+      console.log('UnitsPanel: About to clean up unit:', {
+        id,
+        type: unitInstance.type,
+        currentTrajectories: Array.from(unitInstance.trajectories?.entries() || []).map(([trajId, traj]) => ({
+          id: trajId,
+          isPlaying: traj.isPlaying,
+          eventCount: traj.events?.length
+        })),
+        activeSignals: Array.from(unitInstance.activeTrajectorySignals?.keys() || []),
+        allCurrentUnits: Array.from(unitsRef.current.keys()),
+        newUnitIds: newIds
+      });
+
+      unitInstance.cleanup();
+      unitsRef.current.delete(id);
+
+      console.log('UnitsPanel: Unit cleanup complete:', {
+        id,
+        remainingUnits: Array.from(unitsRef.current.keys())
+      });
     });
   }, [units]);
 
@@ -211,16 +255,83 @@ const UnitsPanel = ({
     return () => window.removeEventListener('keydown', handleKeyPress);
   }, [selectedUnitId, recordingStatus]);
 
-  // Add trajectory controls renderer
+  const TrajectoryEventParams = ({ event, onUpdate }) => {
+    // Add state to track dragging values
+    const [dragValues, setDragValues] = useState({
+      offset: event.offset,
+      playbackRate: event.playbackRate || 1,
+      startOffset: event.startOffset || 0,
+      stopOffset: event.stopOffset || 0
+    });
+
+    // Handle update when dragging stops
+    const handleDragEnd = (param, value) => {
+      onUpdate({ [param]: value });
+    };
+
+    return (
+      <div className="pt-2 space-y-2">
+        <Slider 
+          label="Position"
+          min={0}
+          max={1}
+          step={0.01}
+          value={dragValues.offset}
+          onChange={val => {
+            setDragValues(prev => ({ ...prev, offset: val }));
+          }}
+          onMouseUp={() => handleDragEnd('offset', dragValues.offset)}
+          centered={true}
+        />
+        
+        <Slider 
+          label="Playback Rate"
+          min={0.25}
+          max={4}
+          step={0.25}
+          value={dragValues.playbackRate}
+          onChange={val => {
+            setDragValues(prev => ({ ...prev, playbackRate: val }));
+          }}
+          onMouseUp={() => handleDragEnd('playbackRate', dragValues.playbackRate)}
+        />
+        
+        <Slider 
+          label="Start Offset"
+          min={0}
+          max={1}
+          step={0.01}
+          value={dragValues.startOffset}
+          onChange={val => {
+            setDragValues(prev => ({ ...prev, startOffset: val }));
+          }}
+          onMouseUp={() => handleDragEnd('startOffset', dragValues.startOffset)}
+        />
+        
+        <Slider 
+          label="Stop Offset"
+          min={0}
+          max={1}
+          step={0.01}
+          value={dragValues.stopOffset}
+          onChange={val => {
+            setDragValues(prev => ({ ...prev, stopOffset: val }));
+          }}
+          onMouseUp={() => handleDragEnd('stopOffset', dragValues.stopOffset)}
+        />
+      </div>
+    );
+  };
+
   const renderTrajectoryControls = (unit) => {
     if (unit.type !== UNIT_TYPES.TRAJECTORY) return null;
-
+  
     const trajectoryUnit = unitsRef.current.get(unit.id);
     if (!trajectoryUnit) return null;
-
+  
     const isRecording = recordingStatus[unit.id];
     const trajectories = trajectoryStates.get(unit.id) || [];
-
+  
     return (
       <div className="mt-2 space-y-2">
         <div className="flex gap-2">
@@ -242,46 +353,90 @@ const UnitsPanel = ({
                 : 'bg-blue-600 text-white'
             }`}
           >
-            {isRecording ? '(S)top Recording' : '(S)tart Recording'}
+            {isRecording ? '(S)top Recording Trajectory' : '(S)tart Recording Trajectory'}
           </button>
         </div>
-
+  
         {/* Render trajectory list */}
         <div className="space-y-1">
           {trajectories.map(({ id: trajectoryId, isPlaying }) => (
-            <div 
-              key={trajectoryId}
-              className="flex items-center gap-2 px-2 py-1 bg-gray-700/50 rounded-sm"
-            >
-              <span className="text-xs text-gray-300">
-                Trajectory {String(trajectoryId).slice(-4)}
-              </span>
-              <button
-                onClick={() => {
-                  if (isPlaying) {
-                    trajectoryUnit.stopTrajectory(trajectoryId);
-                  } else {
-                    trajectoryUnit.playTrajectory(trajectoryId);
-                  }
-                  forceTrajectoryUpdate(unit.id);
-                }}
-                className={`px-1.5 py-0.5 text-xs rounded ${
-                  isPlaying
-                    ? 'bg-yellow-600 text-white'
-                    : 'bg-gray-600 text-gray-300'
-                }`}
+            <div key={trajectoryId}>
+              <div className="flex items-center gap-2 px-2 py-1 bg-gray-700/50 rounded-sm">
+                <span className="text-xs text-gray-300">
+                  Trajectory {String(trajectoryId).slice(-4)}
+                </span>
+                <button
+                  onClick={() => {
+                    if (isPlaying) {
+                      trajectoryUnit.stopTrajectory(trajectoryId);
+                    } else {
+                      trajectoryUnit.playTrajectory(trajectoryId);
+                    }
+                    forceTrajectoryUpdate(unit.id);
+                  }}
+                  className={`px-1.5 py-0.5 text-xs rounded ${
+                    isPlaying
+                      ? 'bg-yellow-600 text-white'
+                      : 'bg-gray-600 text-gray-300'
+                  }`}
+                >
+                  {isPlaying ? 'Stop' : 'Play'}
+                </button>
+                <button
+                  onClick={() => {
+                    trajectoryUnit.removeTrajectory(trajectoryId);
+                    forceTrajectoryUpdate(unit.id);
+                  }}
+                  className="px-1.5 py-0.5 text-xs rounded bg-red-600/50 text-white hover:bg-red-600"
+                >
+                  Remove
+                </button>
+                <button
+                  onClick={() => {
+                    const element = document.querySelector(`#trajectory-${trajectoryId}-events`);
+                    element.style.display = element.style.display === 'none' ? 'block' : 'none';
+                  }}
+                  className="p-1 text-xs bg-gray-600/50 hover:bg-gray-600 text-white rounded"
+                >
+                  {/* You can use a chevron icon here */}
+                  ▼
+                </button>
+              </div>
+  
+              {/* Add collapsible events section */}
+              <div 
+                id={`trajectory-${trajectoryId}-events`}
+                className="ml-4 mt-1 space-y-2"
+                style={{ display: 'none' }}
               >
-                {isPlaying ? 'Stop' : 'Play'}
-              </button>
-              <button
-                onClick={() => {
-                  trajectoryUnit.removeTrajectory(trajectoryId);
-                  forceTrajectoryUpdate(unit.id);
-                }}
-                className="px-1.5 py-0.5 text-xs rounded bg-red-600/50 text-white hover:bg-red-600"
-              >
-                Remove
-              </button>
+                {trajectoryUnit.trajectories.get(trajectoryId)?.events
+                  ?.filter(event => event?.cellData)
+                  ?.map((event, index) => (
+                    <div 
+                      key={index}
+                      className="bg-gray-700/50 rounded-sm p-2 space-y-2"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs text-gray-300">
+                          {event.cellData.genomeId.slice(-6)} at {event.time.toFixed(2)}s
+                        </span>
+                      </div>
+                      
+                      <details className="text-xs">
+                        <summary className="cursor-pointer text-gray-300">
+                          Parameters
+                        </summary>
+                        <TrajectoryEventParams
+                          event={event}
+                          onUpdate={updates => {
+                            trajectoryUnit.updateTrajectoryEvent(trajectoryId, index, updates);
+                            forceTrajectoryUpdate(unit.id);
+                          }}
+                        />
+                      </details>
+                    </div>
+                  ))}
+              </div>
             </div>
           ))}
         </div>
@@ -385,7 +540,7 @@ const UnitsPanel = ({
                 </div>
                 
                 <details className="text-xs">
-                  <summary className="cursor-pointer hover:text-white">
+                  <summary className="cursor-pointer text-gray-300">
                     Parameters
                   </summary>
                   <div className="pt-2 space-y-2">
@@ -456,110 +611,140 @@ const UnitsPanel = ({
     });
   }, [units]);
 
+  const handleRemoveUnit = (e, unitId) => {
+    e.stopPropagation();
+    console.log('UnitsPanel: Remove unit clicked:', {
+      unitId,
+      currentUnits: units.map(u => ({ id: u.id, type: u.type })),
+      unitToRemove: unitsRef.current.get(unitId),
+      unitInstances: Array.from(unitsRef.current.entries()).map(([id, unit]) => ({
+        id,
+        type: unit.type,
+        hasTrajectories: unit.trajectories?.size > 0,
+        activeTrajectories: Array.from(unit.trajectories?.entries() || []).map(([trajId, traj]) => ({
+          id: trajId,
+          isPlaying: traj.isPlaying
+        }))
+      }))
+    });
+    onRemoveUnit(unitId);
+  };
+
+  // Add function to get display number for a unit
+  const getDisplayNumber = (unit) => {
+    // Sort units by ID (timestamp) and find index
+    const sortedUnits = [...units].sort((a, b) => a.id - b.id);
+    return sortedUnits.findIndex(u => u.id === unit.id) + 1;
+  };
+
   return (
-    <div className="h-fit bg-gray-900/95 backdrop-blur border-r border-gray-800">
+    <div className="h-fit max-h-[calc(100vh-5rem)] bg-gray-900/95 backdrop-blur border-r border-gray-800 overflow-y-auto">
       <div className="p-2 flex flex-col gap-2 min-w-[16rem]">
-        {units.map(unit => (
-          <div 
-            key={unit.id}
-            onClick={() => onSelectUnit(unit.id)}
-            className={`bg-gray-800/50 rounded-sm p-2 cursor-pointer select-none transition-all
-              ${selectedUnitId === unit.id ? 'ring-1 ring-blue-500' : ''}`}
-          >
-            {/* Controls */}
-            <div className="pointer-events-none flex flex-col gap-2">
-              <div className="flex items-center gap-1.5 pointer-events-auto">
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onToggleState(unit.id, 'active');
-                  }}
-                  className={`w-6 h-6 rounded-sm text-sm flex items-center justify-center ${unit.active 
-                    ? 'bg-blue-600 text-white' 
-                    : 'bg-gray-700 text-gray-400'}`}
-                >
-                  {unit.id}
-                </button>
+        {/* Units list container with minimum height */}
+        <div className="min-h-[100px] flex flex-col gap-2">
+          {units.map(unit => (
+            <div 
+              key={unit.id}
+              onClick={() => onSelectUnit(unit.id)}
+              className={`bg-gray-800/50 rounded-sm p-2 cursor-pointer select-none transition-all
+                ${selectedUnitId === unit.id ? 'ring-1 ring-blue-500' : ''}`}
+            >
+              {/* Controls */}
+              <div className="pointer-events-none flex flex-col gap-2">
+                <div className="flex items-center gap-1.5 pointer-events-auto">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onToggleState(unit.id, 'active');
+                    }}
+                    className={`w-6 h-6 rounded-sm text-sm flex items-center justify-center ${unit.active 
+                      ? 'bg-blue-600 text-white' 
+                      : 'bg-gray-700 text-gray-400'}`}
+                  >
+                    {getDisplayNumber(unit)} {/* Replace unit.id with getDisplayNumber(unit) */}
+                  </button>
+                  
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onToggleState(unit.id, 'muted');
+                    }}
+                    className={`w-6 h-6 rounded-sm text-xs font-medium flex items-center justify-center ${unit.muted 
+                      ? 'bg-red-600 text-white' 
+                      : 'bg-gray-700 text-gray-400'}`}
+                  >
+                    M
+                  </button>
+                  
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onToggleState(unit.id, 'soloed');
+                    }}
+                    className={`w-6 h-6 rounded-sm text-xs font-medium flex items-center justify-center ${unit.soloed 
+                      ? 'bg-yellow-600 text-white' 
+                      : 'bg-gray-700 text-gray-400'}`}
+                  >
+                    S
+                  </button>
+                  
+                  <Volume2 size={14} className="text-gray-400" />
+                  
+                  <button
+                    onClick={(e) => handleRemoveUnit(e, unit.id)}
+                    className="ml-auto w-6 h-6 rounded-sm text-xs font-medium bg-gray-700 hover:bg-red-600 text-gray-400 hover:text-white transition-colors flex items-center justify-center"
+                  >
+                    X
+                  </button>
+                </div>
                 
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onToggleState(unit.id, 'muted');
-                  }}
-                  className={`w-6 h-6 rounded-sm text-xs font-medium flex items-center justify-center ${unit.muted 
-                    ? 'bg-red-600 text-white' 
-                    : 'bg-gray-700 text-gray-400'}`}
-                >
-                  M
-                </button>
-                
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onToggleState(unit.id, 'soloed');
-                  }}
-                  className={`w-6 h-6 rounded-sm text-xs font-medium flex items-center justify-center ${unit.soloed 
-                    ? 'bg-yellow-600 text-white' 
-                    : 'bg-gray-700 text-gray-400'}`}
-                >
-                  S
-                </button>
-                
-                <Volume2 size={14} className="text-gray-400" />
-                
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onRemoveUnit(unit.id);
-                  }}
-                  className="ml-auto w-6 h-6 rounded-sm text-xs font-medium bg-gray-700 hover:bg-red-600 text-gray-400 hover:text-white transition-colors flex items-center justify-center"
-                >
-                  X
-                </button>
-              </div>
-              
-              <div className="flex flex-col gap-0.5 pointer-events-auto">
-                <input
-                  type="range"
-                  min="-60"
-                  max="0"
-                  value={unit.volume}
-                  onClick={e => e.stopPropagation()}
-                  onChange={(e) => {
-                    e.stopPropagation();
-                    onUpdateVolume(unit.id, Number(e.target.value));
-                  }}
-                  className="w-full h-1.5 rounded-sm appearance-none bg-gray-700 [&::-webkit-slider-thumb]:w-2.5 [&::-webkit-slider-thumb]:h-2.5 [&::-webkit-slider-thumb]:rounded-sm [&::-webkit-slider-thumb]:bg-blue-500 [&::-webkit-slider-thumb]:appearance-none"
-                />
-                <div className="text-xs text-gray-400 text-right">
-                  {unit.volume} dB
+                <div className="flex flex-col gap-0.5 pointer-events-auto">
+                  <input
+                    type="range"
+                    min="-60"
+                    max="0"
+                    value={unit.volume}
+                    onClick={e => e.stopPropagation()}
+                    onChange={(e) => {
+                      e.stopPropagation();
+                      onUpdateVolume(unit.id, Number(e.target.value));
+                    }}
+                    className="w-full h-1.5 rounded-sm appearance-none bg-gray-700 [&::-webkit-slider-thumb]:w-2.5 [&::-webkit-slider-thumb]:h-2.5 [&::-webkit-slider-thumb]:rounded-sm [&::-webkit-slider-thumb]:bg-blue-500 [&::-webkit-slider-thumb]:appearance-none"
+                  />
+                  <div className="text-xs text-gray-400 flex justify-between">
+                    <span className="text-gray-500">{unit.type}</span>
+                    <span>{unit.volume} dB</span>
+                  </div>
                 </div>
               </div>
+              {unit.id === selectedUnitId && (
+                <>
+                  {renderTrajectoryControls(unit)}
+                  {renderSequenceControls(unit)}
+                </>
+              )}
             </div>
-            {unit.id === selectedUnitId && (
-              <>
-                {renderTrajectoryControls(unit)}
-                {renderSequenceControls(unit)}
-              </>
+          ))}
+        </div>
+        
+        {/* Move Add Unit button outside of scrollable area */}
+        <div className="sticky bottom-0 bg-gray-900/95 pt-2">
+          <div className="panel-footer relative">
+            <button
+              onClick={() => setShowTypeSelector(!showTypeSelector)}
+              className="w-full p-1.5 rounded-sm bg-gray-800/50 hover:bg-gray-700 text-gray-400 hover:text-white transition-colors flex items-center justify-center gap-1 text-sm"
+            >
+              <Plus size={14} />
+              Add Unit
+            </button>
+            
+            {showTypeSelector && (
+              <UnitTypeSelector 
+                onSelect={onAddUnit}
+                onClose={() => setShowTypeSelector(false)}
+              />
             )}
           </div>
-        ))}
-        
-        <div className="relative">
-          <button
-            onClick={() => setShowTypeSelector(!showTypeSelector)}
-            className="w-full p-1.5 rounded-sm bg-gray-800/50 hover:bg-gray-700 text-gray-400 hover:text-white transition-colors flex items-center justify-center gap-1 text-sm"
-          >
-            <Plus size={14} />
-            Add Unit
-          </button>
-          
-          {showTypeSelector && (
-            <UnitTypeSelector 
-              onSelect={onAddUnit}
-              onClose={() => setShowTypeSelector(false)}
-            />
-          )}
         </div>
       </div>
     </div>

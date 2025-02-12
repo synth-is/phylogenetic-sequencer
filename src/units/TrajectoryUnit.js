@@ -505,11 +505,60 @@ export class TrajectoryUnit extends BaseUnit {
       this.recordingStartTime = Date.now();
     }
 
+    // Get audio buffer length to store with event
+    const vfsKey = `sound-${cellData.genomeId}`;
+    const audioData = this.audioDataCache.get(vfsKey);
+    const bufferLength = audioData ? audioData.length : 0;
+
     const trajectory = this.trajectories.get(this.currentRecordingId);
     trajectory.events.push({
       time: currentTime,
-      cellData
+      cellData,
+      offset: 0.5,          // Position in sequence
+      playbackRate: 1,      // Speed/pitch
+      startOffset: 0,       // Start offset as proportion (0-1)
+      stopOffset: 0,        // Stop offset as proportion (0-1)
+      bufferLength         // Store buffer length for reference
     });
+  }
+
+  // Add method to update trajectory event parameters
+  updateTrajectoryEvent(trajectoryId, eventIndex, updates) {
+    console.log('updateTrajectoryEvent called:', {
+      trajectoryId,
+      eventIndex,
+      updates,
+      currentTrajectory: this.trajectories.get(trajectoryId)
+    });
+
+    const trajectory = this.trajectories.get(trajectoryId);
+    if (!trajectory) {
+      console.error('No trajectory found with ID:', trajectoryId);
+      return;
+    }
+
+    const wasPlaying = trajectory.isPlaying;
+    
+    if (wasPlaying) {
+      console.log('Stopping playback to update parameters');
+      this.stopTrajectoryPlayback(trajectoryId);
+    }
+
+    // Update the event parameters
+    trajectory.events = trajectory.events.map((event, index) => {
+      if (index === eventIndex) {
+        const updatedEvent = { ...event, ...updates };
+        console.log('Updated event:', updatedEvent);
+        return updatedEvent;
+      }
+      return event;
+    });
+
+    // Restart playback if it was playing before
+    if (wasPlaying) {
+      console.log('Restarting playback with updated parameters');
+      this.playTrajectory(trajectoryId);
+    }
   }
 
   stopTrajectoryRecording() {
@@ -535,6 +584,11 @@ export class TrajectoryUnit extends BaseUnit {
   }
 
   async playTrajectory(trajectoryId) {
+    console.log('playTrajectory called with parameters:', {
+      trajectoryId,
+      trajectory: this.trajectories.get(trajectoryId)
+    });
+
     const trajectory = this.trajectories.get(trajectoryId);
     if (!trajectory || trajectory.events.length === 0) return;
 
@@ -571,14 +625,34 @@ export class TrajectoryUnit extends BaseUnit {
       // Create timing signal - 100Hz clock
       const ticker = el.train(100);
 
-      // First, create the sequence with unique values for EACH event
-      const seq = trajectory.events
-        .filter(evt => evt.cellData)
-        .map((evt, i) => ({
-          tickTime: Math.round(evt.time * 100) + 1,
-          value: i + 1,  // Unique value for each event, regardless of genome
+      // Calculate timing adjustments based on offsets
+      const events = trajectory.events.filter(evt => evt.cellData);
+      const sequenceDuration = events[events.length - 1].time;
+
+      // Create sequence with timing adjusted by offset parameter
+      const seq = events.map((evt, i) => {
+        // Calculate adjusted time using the offset parameter (0-1)
+        // offset 0.5 = original time, 0 = start of sequence, 1 = end of sequence
+        const baseTime = evt.time;
+        const offsetAmount = (evt.offset - 0.5) * 2; // Convert 0-1 to -1 to 1
+        const adjustedTime = Math.max(0, 
+          baseTime + (offsetAmount * (sequenceDuration * 0.1)) // 10% max shift
+        );
+
+        console.log('Event timing:', {
+          eventIndex: i,
+          originalTime: baseTime,
+          offset: evt.offset,
+          adjustedTime,
           genomeId: evt.cellData.genomeId
-        }));
+        });
+
+        return {
+          tickTime: Math.round(adjustedTime * 100) + 1,
+          value: i + 1,
+          genomeId: evt.cellData.genomeId
+        };
+      });
 
       const firstTick = seq[0].tickTime - 1;
       const latestEndpoint = Math.max(
@@ -597,8 +671,21 @@ export class TrajectoryUnit extends BaseUnit {
       // Create individual triggers for EACH event
       const players = seq.map((event, index) => {
         const vfsKey = `sound-${event.genomeId}`;
-        
-        // Create individual trigger for this specific event
+        // Find the corresponding event in trajectory.events that has our parameters
+        const trajectoryEvent = trajectory.events[index];
+        const audioData = this.audioDataCache.get(vfsKey);
+        const bufferLength = audioData ? audioData.length : 0;
+
+        console.log('Creating player for event:', {
+          genomeId: event.genomeId,
+          parameters: trajectoryEvent,
+          bufferLength
+        });
+
+        // Convert proportional offsets to sample positions
+        const startOffset = Math.floor((trajectoryEvent?.startOffset || 0) * bufferLength);
+        const stopOffset = Math.floor((trajectoryEvent?.stopOffset || 0) * bufferLength);
+
         const trigger = el.eq(
           masterSeq,
           el.const({ 
@@ -607,17 +694,19 @@ export class TrajectoryUnit extends BaseUnit {
           })
         );
 
+        // Add unique key for each sample instance
         return el.mc.sample({
           channels: 1,
-          key: `player-${trajectoryId}-${index}`,
+          key: `player-${trajectoryId}-${index}-${event.genomeId}`, // Make key unique per event
           path: vfsKey,
           mode: 'trigger',
-          playbackRate: this.playbackRate,
-          startOffset: this.attackTime,
-          endOffset: this.releaseTime
+          playbackRate: trajectoryEvent?.playbackRate || 1,
+          startOffset: startOffset,
+          stopOffset: stopOffset
         }, trigger)[0];
       });
 
+      // Apply duration scaling to the sequence timing
       if (players.length > 0) {
         const signal = players.length === 1 ?
           el.mul(players[0], el.const({ key: `gain-${trajectoryId}`, value: 1 / this.maxVoices })) :
@@ -645,5 +734,15 @@ export class TrajectoryUnit extends BaseUnit {
   removeTrajectory(trajectoryId) {
     this.stopTrajectory(trajectoryId);
     this.trajectories.delete(trajectoryId);
+  }
+
+  // Add this method
+  stopTrajectoryPlayback(trajectoryId) {
+    const trajectory = this.trajectories.get(trajectoryId);
+    if (trajectory) {
+      trajectory.isPlaying = false;
+      this.activeTrajectorySignals.delete(trajectoryId);
+      this.updateVoiceMix();
+    }
   }
 }
