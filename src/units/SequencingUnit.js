@@ -216,28 +216,31 @@ export class SequencingUnit extends BaseUnit {
       groupedItems.get(step).push(item);
     });
 
-    // Calculate timing positions for groups
     const steps = Array.from(groupedItems.keys()).sort((a, b) => a - b);
-    const totalSteps = Math.max(...steps) + 1;
+    const stepSpacing = 1 / Math.max(1, steps.length);
+    
+    // Calculate total number of voices for global gain normalization
+    const totalVoices = Array.from(groupedItems.values())
+      .reduce((sum, items) => sum + items.length, 0);
     
     // Create voices for each group
     const voices = [];
     steps.forEach((step, index) => {
       const items = groupedItems.get(step);
-      const stepTime = this.startOffset * sequenceDuration + 
-                      (step / totalSteps) * (1 - this.startOffset) * sequenceDuration;
+      const baseTime = this.startOffset * sequenceDuration + 
+                      (index * stepSpacing) * (1 - this.startOffset) * sequenceDuration;
 
       items.forEach(item => {
         const vfsKey = `seq-${this.id}-${item.genomeId}`;
         const audioData = this.audioDataCache.get(vfsKey);
         if (!audioData) return;
 
-        // Calculate relative offset from center (0.5)
-        const relativeOffset = (item.offset - 0.5) * (sequenceDuration / totalSteps);
-        const startTime = stepTime + relativeOffset;
+        const relativeOffset = (item.offset - 0.5) * stepSpacing * sequenceDuration;
+        const startTime = baseTime + relativeOffset;
         const duration = audioData.duration * item.durationScale;
 
         try {
+          // Create voice with proper gain normalization
           const voice = el.mul(
             el.sampleseq2({
               path: vfsKey,
@@ -251,7 +254,7 @@ export class SequencingUnit extends BaseUnit {
             }, 
             el.mod(time, el.const({ value: sequenceDuration }))
           ),
-          el.const({ value: 1 / Math.max(1, items.length) }) // Scale by group size
+          el.const({ value: 1 / Math.max(1, totalVoices) }) // Global gain normalization
           );
           voices.push(voice);
         } catch (error) {
