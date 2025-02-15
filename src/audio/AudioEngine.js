@@ -65,8 +65,12 @@ class AudioEngine {
   }
 
   // Register a unit's audio nodes
-  setUnitNodes(unitId, nodes) {
-    this.unitNodes.set(unitId, nodes);
+  setUnitNodes(unitId, nodes, volume = -12) {
+    const gain = this.dbToGain(volume);
+    const volumeAdjustedNodes = nodes.map(node => 
+      el.mul(node, el.const({ key: `gain-${unitId}`, value: gain }))
+    );
+    this.unitNodes.set(unitId, volumeAdjustedNodes);
     this.updateAudioGraph();
   }
 
@@ -106,6 +110,11 @@ class AudioEngine {
 
   getRenderer() {
     return this.renderer;
+  }
+
+  // Add helper to convert dB to linear gain
+  dbToGain(db) {
+    return Math.pow(10, db / 20);
   }
 }
 

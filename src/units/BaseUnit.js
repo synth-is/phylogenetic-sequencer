@@ -20,6 +20,6 @@ export class BaseUnit {
   }
 
   updateAudioNodes(nodes) {
-    this.audioEngine.setUnitNodes(this.id, nodes);
+    this.audioEngine.setUnitNodes(this.id, nodes, this.volume);
   }
 }

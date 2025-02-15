@@ -304,6 +304,10 @@ export class SequencingUnit extends BaseUnit {
   }
 
   updateConfig(config) {
+    if (config.volume !== undefined && config.volume !== this.volume) {
+      this.volume = config.volume;
+      this.updateSequencer();
+    }
     Object.assign(this, config);
     if (config.pitch !== undefined) {
       this.activeSequence.forEach(item => {

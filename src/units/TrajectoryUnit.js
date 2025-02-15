@@ -378,6 +378,10 @@ export class TrajectoryUnit extends BaseUnit {
 
   // Update config method to handle playback mode
   updateConfig(config) {
+    if (config.volume !== undefined && config.volume !== this.volume) {
+      this.volume = config.volume;
+      this.updateVoiceMix();
+    }
     Object.assign(this, config);
     if (config.playbackMode) {
       if (config.playbackMode !== this.playbackMode) {
