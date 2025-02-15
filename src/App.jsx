@@ -337,14 +337,19 @@ function MainApp() {
   };
 
   const handleToggleState = (id, state) => {
-    setUnits(prevUnits => 
-      prevUnits.map(unit => {
+    setUnits(prevUnits => {
+      const newUnits = prevUnits.map(unit => {
         if (unit.id === id) {
           return { ...unit, [state]: !unit[state] };
         }
+        // If toggling solo, un-solo other units
+        if (state === 'soloed' && unit.id !== id) {
+          return { ...unit, soloed: false };
+        }
         return unit;
-      })
-    );
+      });
+      return newUnits;
+    });
   };
 
   const handleUpdateVolume = (id, volume) => {

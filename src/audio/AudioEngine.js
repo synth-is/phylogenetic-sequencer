@@ -65,12 +65,27 @@ class AudioEngine {
   }
 
   // Register a unit's audio nodes
-  setUnitNodes(unitId, nodes, volume = -12) {
+  setUnitNodes(unitId, nodes, config = { volume: -12, active: true, soloed: false }) {
+    const { volume, active, soloed } = config;
+    console.log('AudioEngine: Setting unit nodes:', {
+      unitId,
+      nodeCount: nodes.length,
+      config: { volume, active, soloed }
+    });
+    
     const gain = this.dbToGain(volume);
+
+    // Store original nodes with just volume adjustment
     const volumeAdjustedNodes = nodes.map(node => 
       el.mul(node, el.const({ key: `gain-${unitId}`, value: gain }))
     );
-    this.unitNodes.set(unitId, volumeAdjustedNodes);
+    
+    this.unitNodes.set(unitId, {
+      nodes: volumeAdjustedNodes,
+      active,
+      soloed
+    });
+    
     this.updateAudioGraph();
   }
 
@@ -84,20 +99,38 @@ class AudioEngine {
   updateAudioGraph() {
     if (!this.initialized) return;
 
-    // Combine all unit nodes
-    const allNodes = Array.from(this.unitNodes.values())
-      .filter(nodes => nodes && nodes.length)
+    console.log('AudioEngine: Updating audio graph', {
+      units: Array.from(this.unitNodes.entries()).map(([id, unit]) => ({
+        id,
+        active: unit.active,
+        soloed: unit.soloed,
+        volume: unit.volume,
+        nodeCount: unit.nodes.length
+      }))
+    });
+
+    // Check if any units are soloed
+    const hasSoloedUnits = Array.from(this.unitNodes.values())
+      .some(unit => unit.soloed);
+
+    // Get active nodes considering solo state
+    const activeNodes = Array.from(this.unitNodes.entries())
+      .filter(([_, unit]) => {
+        if (!unit.active) return false;
+        return hasSoloedUnits ? unit.soloed : true;
+      })
+      .map(([_, unit]) => unit.nodes)
       .flat();
 
-    if (!allNodes.length) {
+    if (!activeNodes.length) {
       this.renderer.render(el.const({value: 0}), el.const({value: 0}));
       return;
     }
 
     // Mix down all nodes
-    const mix = allNodes.length === 1 ? 
-      allNodes[0] : 
-      el.add(...allNodes);
+    const mix = activeNodes.length === 1 ? 
+      activeNodes[0] : 
+      el.add(...activeNodes);
 
     // Render stereo output
     this.renderer.render(mix, mix);

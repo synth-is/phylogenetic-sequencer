@@ -304,17 +304,29 @@ export class SequencingUnit extends BaseUnit {
   }
 
   updateConfig(config) {
-    if (config.volume !== undefined && config.volume !== this.volume) {
-      this.volume = config.volume;
+    // Handle state changes that need immediate audio update
+    if (config.active !== undefined && config.active !== this.active) {
+      this.active = config.active;
       this.updateSequencer();
     }
-    Object.assign(this, config);
-    if (config.pitch !== undefined) {
+    if (config.soloed !== undefined && config.soloed !== this.soloed) {
+      this.soloed = config.soloed;
+      // Just update mixing without affecting element settings
+      this.updateSequencer();
+      return; // Exit early to prevent pitch/other updates
+    }
+
+    // Only update sequence item pitches when explicitly changing unit pitch
+    if (config.pitch !== undefined && config.pitch !== this.pitch) {
+      this.pitch = config.pitch;
       this.activeSequence.forEach(item => {
-        item.pitchShift = config.pitch; // Adjust pitch shift for each sequence item
+        item.pitchShift = config.pitch;
       });
-      this.updateSequencer();
     }
+
+    // Handle other config changes
+    Object.assign(this, config);
+    this.updateSequencer();
   }
 
   cleanup() {

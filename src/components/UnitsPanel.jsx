@@ -475,22 +475,6 @@ const UnitsPanel = ({
   
     return (
       <div className="mt-2 space-y-2">
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => {
-              sequencingUnit.togglePlayback();
-              forceSequenceUpdate(unit.id);
-            }}
-            className={`px-2 py-1 text-xs rounded ${
-              currentState.isPlaying
-                ? 'bg-red-600 text-white'
-                : 'bg-blue-600 text-white'
-            }`}
-          >
-            {currentState.isPlaying ? 'Stop Sequence' : 'Play Sequence'}
-          </button>
-        </div>
-  
         {groupedSequence.map(group => (
           <div 
             key={group.offset}
@@ -637,6 +621,49 @@ const UnitsPanel = ({
     return sortedUnits.findIndex(u => u.id === unit.id) + 1;
   };
 
+  // Add helper for exclusive soloing
+  const handleSoloToggle = (e, unitId) => {
+    e.stopPropagation();
+    
+    // First update UI state and immediately update audio engine for all units
+    units.forEach(unit => {
+      if (unit.id !== unitId && unit.soloed) {
+        onToggleState(unit.id, 'soloed');
+        updateUnitConfig(unit.id, {
+          ...unit,
+          soloed: false
+        });
+      }
+    });
+
+    // Then toggle solo for clicked unit and immediately update its audio engine state
+    const unit = units.find(u => u.id === unitId);
+    const newSoloState = !unit.soloed;
+    onToggleState(unitId, 'soloed');
+    updateUnitConfig(unitId, {
+      ...unit,
+      soloed: newSoloState
+    });
+  };
+
+  const handleActiveToggle = (e, unit) => {
+    e.stopPropagation();
+    // First update the UI state
+    onToggleState(unit.id, 'active');
+    
+    // Immediately update the audio engine
+    updateUnitConfig(unit.id, {
+      ...unit,
+      active: !unit.active
+    });
+
+    // For SequencingUnit, also toggle playback
+    const sequencingUnit = unitsRef.current.get(unit.id);
+    if (sequencingUnit?.type === UNIT_TYPES.SEQUENCING) {
+      sequencingUnit.togglePlayback();
+    }
+  };
+
   return (
     <div className="h-fit max-h-[calc(100vh-5rem)] bg-gray-900/95 backdrop-blur border-r border-gray-800 overflow-y-auto">
       <div className="p-2 flex flex-col gap-2 min-w-[16rem]">
@@ -653,10 +680,7 @@ const UnitsPanel = ({
               <div className="pointer-events-none flex flex-col gap-2">
                 <div className="flex items-center gap-1.5 pointer-events-auto">
                   <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onToggleState(unit.id, 'active');
-                    }}
+                    onClick={(e) => handleActiveToggle(e, unit)}
                     className={`w-6 h-6 rounded-sm text-sm flex items-center justify-center ${unit.active 
                       ? 'bg-blue-600 text-white' 
                       : 'bg-gray-700 text-gray-400'}`}
@@ -665,22 +689,7 @@ const UnitsPanel = ({
                   </button>
                   
                   <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onToggleState(unit.id, 'muted');
-                    }}
-                    className={`w-6 h-6 rounded-sm text-xs font-medium flex items-center justify-center ${unit.muted 
-                      ? 'bg-red-600 text-white' 
-                      : 'bg-gray-700 text-gray-400'}`}
-                  >
-                    M
-                  </button>
-                  
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onToggleState(unit.id, 'soloed');
-                    }}
+                    onClick={(e) => handleSoloToggle(e, unit.id)}
                     className={`w-6 h-6 rounded-sm text-xs font-medium flex items-center justify-center ${unit.soloed 
                       ? 'bg-yellow-600 text-white' 
                       : 'bg-gray-700 text-gray-400'}`}
@@ -720,7 +729,7 @@ const UnitsPanel = ({
               {unit.id === selectedUnitId && (
                 <>
                   {renderTrajectoryControls(unit)}
-                  {renderSequenceControls(unit)}
+                  {unit.type === UNIT_TYPES.SEQUENCING && renderSequenceControls(unit)}
                 </>
               )}
             </div>

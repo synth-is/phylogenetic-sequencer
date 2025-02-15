@@ -207,11 +207,18 @@ export class TrajectoryUnit extends BaseUnit {
                 mode: 'loop',
                 playbackRate: this.playbackRate,
                 startOffset: 0,
-                endOffset: 0
+                endOffset: 0,
+                key: `looping-${genomeId}-${this.id}` // Add unique key
                 },
-                el.const({ value: 1 }) // Constant trigger
+                el.const({ 
+                  key: `trigger-${genomeId}-${this.id}`, // Add unique trigger key
+                  value: 1 
+                })
             )[0], // Take first channel from multichannel output
-            el.const({ value: 1 / this.maxVoices }) // Dynamic gain scaling
+            el.const({ 
+              key: `gain-${genomeId}-${this.id}`, // Add unique gain key
+              value: 1 / this.maxVoices 
+            })
             );
 
             // Store voice with metadata and timestamp for age tracking
@@ -350,6 +357,12 @@ export class TrajectoryUnit extends BaseUnit {
   }
 
   updateVoiceMix() {
+    // Only mix voices if unit is active
+    if (!this.active) {
+      this.updateAudioNodes([]);
+      return;
+    }
+
     // Combine all active voices
     const loopingVoices = Array.from(this.loopingVoices.values()).map(v => v.voice);
     const oneOffVoices = Array.from(this.oneOffVoices.values());
@@ -378,24 +391,27 @@ export class TrajectoryUnit extends BaseUnit {
 
   // Update config method to handle playback mode
   updateConfig(config) {
-    if (config.volume !== undefined && config.volume !== this.volume) {
-      this.volume = config.volume;
+    // Handle state changes that need immediate audio update
+    if (config.active !== undefined && config.active !== this.active) {
+      this.active = config.active;
       this.updateVoiceMix();
     }
-    Object.assign(this, config);
-    if (config.playbackMode) {
-      if (config.playbackMode !== this.playbackMode) {
-        // Clear all voices when switching modes
-        this.loopingVoices.clear();
-        this.oneOffVoices.clear();
-        this.updateVoiceMix();
-      }
-      this.playbackMode = config.playbackMode;
+    if (config.soloed !== undefined && config.soloed !== this.soloed) {
+      this.soloed = config.soloed;
+      // Just update mixing without affecting element settings
+      this.updateVoiceMix();
+      return; // Exit early to prevent pitch/other updates
     }
-    if (config.pitch !== undefined) {
+
+    // Handle pitch changes for both trajectory events and looping voices
+    if (config.pitch !== undefined && config.pitch !== this.pitch) {
+      this.pitch = config.pitch;
       this.playbackRate = Math.pow(2, config.pitch / 12);
       
-      // Update all looping voices with new playback rate
+      // Update trajectories
+      this.updateTrajectoryPlaybackRates(config.pitch);
+      
+      // Also update any active looping voices with proper keys
       this.loopingVoices.forEach((voiceData, genomeId) => {
         const vfsKey = `sound-${genomeId}`;
         const voice = el.mul(
@@ -406,24 +422,34 @@ export class TrajectoryUnit extends BaseUnit {
               mode: 'loop',
               playbackRate: this.playbackRate,
               startOffset: 0,
-              endOffset: 0
+              endOffset: 0,
+              key: `looping-${genomeId}-${this.id}` // Add unique key
             },
-            el.const({ value: 1 })
+            el.const({ 
+              key: `trigger-${genomeId}-${this.id}`, // Add unique trigger key
+              value: 1 
+            })
           )[0],
-          el.const({ value: 1 / this.maxVoices })
+          el.const({ 
+            key: `gain-${genomeId}-${this.id}`, // Add unique gain key
+            value: 1 / this.maxVoices 
+          })
         );
+        
+        // Update voice in map
         this.loopingVoices.set(genomeId, {
           ...voiceData,
           voice
         });
       });
-
-      // Update trajectory events
-      this.updateTrajectoryPlaybackRates(config.pitch);
       
-      // Update audio graph with new voices
+      // Force audio update
       this.updateVoiceMix();
     }
+
+    // Handle other config changes
+    Object.assign(this, config);
+    this.updateVoiceMix();
   }
 
   // Add method to update playback rates for all trajectory events

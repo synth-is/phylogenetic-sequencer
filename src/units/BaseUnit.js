@@ -20,6 +20,10 @@ export class BaseUnit {
   }
 
   updateAudioNodes(nodes) {
-    this.audioEngine.setUnitNodes(this.id, nodes, this.volume);
+    this.audioEngine.setUnitNodes(this.id, nodes, {
+      volume: this.volume,
+      active: this.active,
+      soloed: this.soloed
+    });
   }
 }
