@@ -20,6 +20,7 @@ export class SequencingUnit extends BaseUnit {
     this.voiceNodes = new Map();
     this.isPlaying = true;  // Change default to true
     this.selectedTimestep = null; // Add this line
+    this.pitch = 0;
   }
 
   async initialize() {
@@ -303,9 +304,13 @@ export class SequencingUnit extends BaseUnit {
   }
 
   updateConfig(config) {
-    if (!config) return;
     Object.assign(this, config);
-    this.updateSequencer();
+    if (config.pitch !== undefined) {
+      this.activeSequence.forEach(item => {
+        item.pitchShift = config.pitch; // Adjust pitch shift for each sequence item
+      });
+      this.updateSequencer();
+    }
   }
 
   cleanup() {

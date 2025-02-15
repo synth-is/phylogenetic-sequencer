@@ -48,6 +48,8 @@ export class TrajectoryUnit extends BaseUnit {
     this.recordingStartTime = null;
     this.currentRecordingId = null;
     this.activeTrajectorySignals = new Map();
+
+    this.pitch = 0;
   }
 
   async initialize() {
@@ -386,6 +388,72 @@ export class TrajectoryUnit extends BaseUnit {
       }
       this.playbackMode = config.playbackMode;
     }
+    if (config.pitch !== undefined) {
+      this.playbackRate = Math.pow(2, config.pitch / 12);
+      
+      // Update all looping voices with new playback rate
+      this.loopingVoices.forEach((voiceData, genomeId) => {
+        const vfsKey = `sound-${genomeId}`;
+        const voice = el.mul(
+          el.mc.sample(
+            {
+              channels: 1,
+              path: vfsKey,
+              mode: 'loop',
+              playbackRate: this.playbackRate,
+              startOffset: 0,
+              endOffset: 0
+            },
+            el.const({ value: 1 })
+          )[0],
+          el.const({ value: 1 / this.maxVoices })
+        );
+        this.loopingVoices.set(genomeId, {
+          ...voiceData,
+          voice
+        });
+      });
+
+      // Update trajectory events
+      this.updateTrajectoryPlaybackRates(config.pitch);
+      
+      // Update audio graph with new voices
+      this.updateVoiceMix();
+    }
+  }
+
+  // Add method to update playback rates for all trajectory events
+  updateTrajectoryPlaybackRates(pitch) {
+    const playbackRate = Math.pow(2, pitch / 12);
+    const playingTrajectories = new Set();
+
+    // Store currently playing trajectories
+    this.trajectories.forEach((trajectory, id) => {
+      if (trajectory.isPlaying) {
+        playingTrajectories.add(id);
+      }
+    });
+
+    // Stop all playing trajectories
+    playingTrajectories.forEach(id => {
+      this.stopTrajectoryPlayback(id);
+    });
+
+    // Update playback rates
+    this.trajectories.forEach(trajectory => {
+      trajectory.events.forEach(event => {
+        if (event.cellData) {
+          event.playbackRate = playbackRate;
+        }
+      });
+    });
+
+    // Restart previously playing trajectories
+    playingTrajectories.forEach(id => {
+      this.playTrajectory(id);
+    });
+
+    this.updateVoiceMix();
   }
 
   // Add method to update playback parameters
@@ -694,13 +762,13 @@ export class TrajectoryUnit extends BaseUnit {
           })
         );
 
-        // Add unique key for each sample instance
+        // Ensure we use the current playbackRate from the event
         return el.mc.sample({
           channels: 1,
-          key: `player-${trajectoryId}-${index}-${event.genomeId}`, // Make key unique per event
+          key: `player-${trajectoryId}-${index}-${event.genomeId}`,
           path: vfsKey,
           mode: 'trigger',
-          playbackRate: trajectoryEvent?.playbackRate || 1,
+          playbackRate: trajectoryEvent?.playbackRate || 1, // Use event's playbackRate
           startOffset: startOffset,
           stopOffset: stopOffset
         }, trigger)[0];

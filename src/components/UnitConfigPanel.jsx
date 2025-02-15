@@ -205,6 +205,29 @@ const UnitConfigPanel = ({ unit, units, onClose, onUpdateUnit }) => {
                         ? 'Hover over nodes to loop sounds; hover again to stop the looping'
                         : 'Hover nodes to play sounds once'}
                     </p>
+                    <Slider 
+                      label="Pitch" 
+                      value={unit.pitch || 0} 
+                      onChange={val => handleValueChange('pitch', val)} 
+                      min={-12} 
+                      max={12} 
+                      centered={true}
+                    />
+                  </div>
+                </CollapsibleSection>
+              )}
+
+              {unit.type === UNIT_TYPES.SEQUENCING && (
+                <CollapsibleSection title="Playback">
+                  <div className="space-y-2">
+                    <Slider 
+                      label="Pitch" 
+                      value={unit.pitch || 0} 
+                      onChange={val => handleValueChange('pitch', val)} 
+                      min={-12} 
+                      max={12} 
+                      centered={true}
+                    />
                   </div>
                 </CollapsibleSection>
               )}
