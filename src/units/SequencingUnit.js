@@ -226,12 +226,12 @@ export class SequencingUnit extends BaseUnit {
     
     // Create voices for each group
     const voices = [];
-    steps.forEach((step, index) => {
+    steps.forEach((step, stepIndex) => {
       const items = groupedItems.get(step);
       const baseTime = this.startOffset * sequenceDuration + 
-                      (index * stepSpacing) * (1 - this.startOffset) * sequenceDuration;
+                      (stepIndex * stepSpacing) * (1 - this.startOffset) * sequenceDuration;
 
-      items.forEach(item => {
+      items.forEach((item, itemIndex) => {
         const vfsKey = `seq-${this.id}-${item.genomeId}`;
         const audioData = this.audioDataCache.get(vfsKey);
         if (!audioData) return;
@@ -241,9 +241,10 @@ export class SequencingUnit extends BaseUnit {
         const duration = audioData.duration * item.durationScale;
 
         try {
-          // Create voice with proper gain normalization
+          // Create voice with proper gain normalization and unique keys
           const voice = el.mul(
             el.sampleseq2({
+              key: `player-${this.id}-${step}-${itemIndex}`, // Add unique key for player
               path: vfsKey,
               duration: duration,
               seq: [
@@ -253,9 +254,18 @@ export class SequencingUnit extends BaseUnit {
               shift: item.pitchShift,
               stretch: item.stretch
             }, 
-            el.mod(time, el.const({ value: sequenceDuration }))
+            el.mod(
+              time, 
+              el.const({ 
+                key: `duration-${this.id}-${step}-${itemIndex}`, // Add unique key for duration
+                value: sequenceDuration 
+              })
+            )
           ),
-          el.const({ value: 1 / Math.max(1, totalVoices) }) // Global gain normalization
+          el.const({ 
+            key: `gain-${this.id}-${step}-${itemIndex}`, // Add unique key for gain
+            value: 1 / Math.max(1, totalVoices) 
+          })
           );
           voices.push(voice);
         } catch (error) {
