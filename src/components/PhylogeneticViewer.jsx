@@ -80,7 +80,7 @@ const PhylogeneticViewer = ({
 
   // 3. Finally define the handlers that use setNodePlaying
   const handleNodeMouseOver = useCallback((event, d) => {
-    if (!hasAudioInteraction || !onCellHover) return;
+    if (!hasAudioInteraction || !onCellHover || silentMode) return; // Add silentMode check here
 
     const now = Date.now();
     const lastHover = hoverTimestampsRef.current.get(d.data.id) || 0;
@@ -132,7 +132,7 @@ const PhylogeneticViewer = ({
         }
       }
     });
-  }, [experiment, evoRunId, hasAudioInteraction, onCellHover, setNodePlaying]);
+  }, [experiment, evoRunId, hasAudioInteraction, onCellHover, setNodePlaying, silentMode]); // Add silentMode to dependencies
 
   const handleNodeClick = useCallback((event, d) => {
     if (!hasAudioInteraction || !onCellHover) return;
@@ -410,12 +410,12 @@ const PhylogeneticViewer = ({
       }
     };
   
-    window.addEventListener('keydown', handleKeyPress);
-    window.addEventListener('keyup', handleKeyPress);
+    document.addEventListener('keydown', handleKeyPress);
+    document.addEventListener('keyup', handleKeyPress);
   
     return () => {
-      window.removeEventListener('keydown', handleKeyPress);
-      window.removeEventListener('keyup', handleKeyPress);
+      document.removeEventListener('keydown', handleKeyPress);
+      document.removeEventListener('keyup', handleKeyPress);
     };
   }, []);
 
