@@ -50,6 +50,20 @@ export class TrajectoryUnit extends BaseUnit {
     this.activeTrajectorySignals = new Map();
 
     this.pitch = 0;
+    this.onVoicesChanged = null; // Add callback property
+    this.stateChangeCallbacks = new Set(); // Add this line
+  }
+
+  addStateChangeCallback(callback) {
+    this.stateChangeCallbacks.add(callback);
+  }
+
+  removeStateChangeCallback(callback) {
+    this.stateChangeCallbacks.delete(callback);
+  }
+
+  notifyStateChange() {
+    this.stateChangeCallbacks.forEach(callback => callback());
   }
 
   async initialize() {
@@ -186,6 +200,8 @@ export class TrajectoryUnit extends BaseUnit {
           this.loopingVoices.delete(genomeId);
           this.updateVoiceMix();
           cellData.config?.onLoopStateChanged?.(false);
+          this.onVoicesChanged?.();
+          this.notifyStateChange(); // Add this line after voice is removed
           return;
         }
 
@@ -237,6 +253,8 @@ export class TrajectoryUnit extends BaseUnit {
           });
 
           cellData.config?.onLoopStateChanged?.(true);
+          this.onVoicesChanged?.();
+          this.notifyStateChange(); // Add this line after voice is created
         }
       } else { // one-off mode
         // Store callback before potentially superseding the voice
@@ -393,15 +411,12 @@ export class TrajectoryUnit extends BaseUnit {
 
     // Instead of directly rendering, update nodes in AudioEngine
     this.updateAudioNodes(mix ? [mix] : []);
+    this.onVoicesChanged?.();
   }
 
   // Update config method to handle playback mode
   updateConfig(config) {
     // Handle state changes that need immediate audio update
-    if (config.active !== undefined && config.active !== this.active) {
-      this.active = config.active;
-      this.updateVoiceMix();
-    }
     if (config.soloed !== undefined && config.soloed !== this.soloed) {
       this.soloed = config.soloed;
       // Just update mixing without affecting element settings
@@ -554,6 +569,7 @@ export class TrajectoryUnit extends BaseUnit {
     this.currentRecordingId = null;
     this.recordingStartTime = null;
 
+    this.stateChangeCallbacks.clear();
     // Make sure to call parent cleanup to remove nodes from AudioEngine
     super.cleanup();
   }
@@ -848,5 +864,45 @@ export class TrajectoryUnit extends BaseUnit {
       this.activeTrajectorySignals.delete(trajectoryId);
       this.updateVoiceMix();
     }
+  }
+
+  // Add method to update looping voice parameters
+  updateLoopingVoice(genomeId, updates) {
+    if (!this.loopingVoices.has(genomeId)) return;
+
+    const voiceData = this.loopingVoices.get(genomeId);
+    const vfsKey = `sound-${genomeId}`;
+    
+    // Create new voice with updated parameters
+    const voice = el.mul(
+      el.mc.sample(
+        {
+          channels: 1,
+          path: vfsKey,
+          mode: 'loop',
+          playbackRate: updates.playbackRate || this.playbackRate,
+          startOffset: Math.floor((updates.startOffset || 0) * voiceData.duration),
+          endOffset: Math.floor((updates.stopOffset || 0) * voiceData.duration),
+          key: `looping-${genomeId}-${this.id}`
+        },
+        el.const({ 
+          key: `trigger-${genomeId}-${this.id}`,
+          value: 1 
+        })
+      )[0],
+      el.const({ 
+        key: `gain-${genomeId}-${this.id}`,
+        value: 1 / this.maxVoices 
+      })
+    );
+
+    // Update voice in map with new parameters
+    this.loopingVoices.set(genomeId, {
+      ...voiceData,
+      voice,
+      ...updates
+    });
+
+    this.updateVoiceMix();
   }
 }

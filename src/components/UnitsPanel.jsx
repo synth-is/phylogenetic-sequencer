@@ -52,7 +52,7 @@ const UnitTypeSelector = ({ onSelect, onClose }) => (
   </div>
 );
 
-const UnitsPanel = ({ 
+export default function UnitsPanel({ 
   units, 
   onPlaybackChange,
   selectedUnitId, 
@@ -62,7 +62,7 @@ const UnitsPanel = ({
   onToggleState,
   onUpdateVolume,
   onCellHover 
-}) => {
+}) {
   const [showTypeSelector, setShowTypeSelector] = useState(false);
   const { handleCellHover, updateUnitConfig } = useUnits();
   const unitsRef = useRef(new Map());
@@ -186,12 +186,21 @@ const UnitsPanel = ({
         formattedData
       });
 
+      // Add a callback to update UI whenever voices change
+      const handleVoicesChanged = () => {
+        forceTrajectoryUpdate(selectedUnitId);
+      };
+
       if (unit.type === UNIT_TYPES.TRAJECTORY) {
+        // Add the callback before handling hover
+        unit.onVoicesChanged = handleVoicesChanged;
         unit.handleCellHover(formattedData);
+        // Remove callback after handling hover
+        unit.onVoicesChanged = null;
       } else if (unit.type === UNIT_TYPES.SEQUENCING && onCellHover.config?.addToSequence) {
         console.log('Toggling sequence item for unit:', selectedUnitId);
         unit.toggleSequenceItem(formattedData);
-        forceSequenceUpdate(selectedUnitId); // Force UI update after sequence change
+        forceSequenceUpdate(selectedUnitId);
       }
     }
   }, [selectedUnitId, onCellHover]);
@@ -233,11 +242,12 @@ const UnitsPanel = ({
       // Only trigger if a unit is selected and key isn't pressed in an input
       if (!selectedUnitId || e.target.tagName === 'INPUT') return;
       
-      if (e.key.toLowerCase() === 's') {
-        e.preventDefault();
-        const trajectoryUnit = unitsRef.current.get(selectedUnitId);
-        if (!trajectoryUnit) return;
+      const trajectoryUnit = unitsRef.current.get(selectedUnitId);
+      if (!trajectoryUnit || trajectoryUnit.type !== UNIT_TYPES.TRAJECTORY) return;
 
+      // Only allow recording shortcut in one-off mode
+      if (e.key.toLowerCase() === 's' && trajectoryUnit.playbackMode !== 'looping') {
+        e.preventDefault();
         const isRecording = recordingStatus[selectedUnitId];
         if (!isRecording) {
           const trajectoryId = trajectoryUnit.startTrajectoryRecording();
@@ -331,33 +341,121 @@ const UnitsPanel = ({
   
     const isRecording = recordingStatus[unit.id];
     const trajectories = trajectoryStates.get(unit.id) || [];
-  
+    const loopingVoices = Array.from(trajectoryUnit.loopingVoices.entries()).map(([genomeId, data]) => ({
+      id: genomeId,
+      ...data
+    }));
+
+    // Only show recording controls if not in looping mode
+    const isLoopingMode = trajectoryUnit.playbackMode === 'looping';
+
     return (
       <div className="mt-2 space-y-2">
-        <div className="flex gap-2">
-          <button
-            onClick={() => {
-              if (!isRecording) {
-                const trajectoryId = trajectoryUnit.startTrajectoryRecording();
-                setRecordingStatus(prev => ({ ...prev, [unit.id]: true }));
-                forceTrajectoryUpdate(unit.id);
-              } else {
-                trajectoryUnit.stopTrajectoryRecording();
-                setRecordingStatus(prev => ({ ...prev, [unit.id]: false }));
-                forceTrajectoryUpdate(unit.id);
-              }
-            }}
-            className={`px-2 py-1 text-xs rounded ${
-              isRecording 
-                ? 'bg-red-600 text-white' 
-                : 'bg-blue-600 text-white'
-            }`}
-          >
-            {isRecording ? '(S)top Recording Trajectory' : '(S)tart Recording Trajectory'}
-          </button>
-        </div>
-  
-        {/* Render trajectory list */}
+        {/* Recording controls - only show if not in looping mode */}
+        {!isLoopingMode && (
+          <div className="flex gap-2">
+            <button
+              onClick={() => {
+                if (!isRecording) {
+                  const trajectoryId = trajectoryUnit.startTrajectoryRecording();
+                  setRecordingStatus(prev => ({ ...prev, [unit.id]: true }));
+                  forceTrajectoryUpdate(unit.id);
+                } else {
+                  trajectoryUnit.stopTrajectoryRecording();
+                  setRecordingStatus(prev => ({ ...prev, [unit.id]: false }));
+                  forceTrajectoryUpdate(unit.id);
+                }
+              }}
+              className={`px-2 py-1 text-xs rounded ${
+                isRecording 
+                  ? 'bg-red-600 text-white' 
+                  : 'bg-blue-600 text-white'
+              }`}
+            >
+              {isRecording ? '(S)top Recording Trajectory' : '(S)tart Recording Trajectory'}
+            </button>
+          </div>
+        )}
+
+        {/* Looping Voices Group - Add this section */}
+        {loopingVoices.length > 0 && (
+          <div className="space-y-1">
+            <div className="flex items-center gap-2 px-2 py-1 bg-gray-700/50 rounded-sm">
+              <span className="text-xs text-gray-300">
+                Looping Voices ({loopingVoices.length})
+              </span>
+              <div className="flex-1" />
+              <button
+                onClick={() => {
+                  loopingVoices.forEach(voice => {
+                    trajectoryUnit.stopLoopingVoice(voice.id);
+                  });
+                  forceTrajectoryUpdate(unit.id);
+                }}
+                className="px-1.5 py-0.5 text-xs rounded bg-red-600/50 text-white hover:bg-red-600"
+              >
+                Stop All
+              </button>
+              <button
+                onClick={() => {
+                  const element = document.querySelector(`#looping-voices-${unit.id}`);
+                  element.style.display = element.style.display === 'none' ? 'block' : 'none';
+                }}
+                className="p-1 text-xs bg-gray-600/50 hover:bg-gray-600 text-white rounded"
+              >
+                ▼
+              </button>
+            </div>
+
+            <div 
+              id={`looping-voices-${unit.id}`}
+              className="ml-4 mt-1 space-y-2"
+              style={{ display: 'none' }}
+            >
+              {loopingVoices.map(voice => (
+                <div 
+                  key={voice.id}
+                  className="bg-gray-700/50 rounded-sm p-2 space-y-2"
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-gray-300">
+                      {voice.id.slice(-6)}
+                    </span>
+                    <button
+                      onClick={() => {
+                        trajectoryUnit.stopLoopingVoice(voice.id);
+                        forceTrajectoryUpdate(unit.id);
+                      }}
+                      className="px-1.5 py-0.5 text-xs rounded bg-red-600/50 text-white hover:bg-red-600"
+                    >
+                      Stop
+                    </button>
+                  </div>
+
+                  <details className="text-xs">
+                    <summary className="cursor-pointer text-gray-300">
+                      Parameters
+                    </summary>
+                    <TrajectoryEventParams
+                      event={{
+                        offset: 0.5,
+                        playbackRate: voice.playbackRate || 1,
+                        startOffset: voice.startOffset || 0,
+                        stopOffset: voice.stopOffset || 0
+                      }}
+                      onUpdate={updates => {
+                        trajectoryUnit.updateLoopingVoice(voice.id, updates);
+                        forceTrajectoryUpdate(unit.id);
+                      }}
+                    />
+                  </details>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Existing trajectories list */}
         <div className="space-y-1">
           {trajectories.map(({ id: trajectoryId, isPlaying }) => (
             <div key={trajectoryId}>
@@ -664,6 +762,61 @@ const UnitsPanel = ({
     }
   };
 
+  // Add useEffect to setup state change listeners
+  useEffect(() => {
+    const handleStateChange = (unitId) => () => {
+      forceTrajectoryUpdate(unitId);
+    };
+
+    const listeners = new Map();
+
+    units.forEach(unit => {
+      if (unit.type === UNIT_TYPES.TRAJECTORY) {
+        const trajUnit = unitsRef.current.get(unit.id);
+        if (trajUnit) {
+          const listener = handleStateChange(unit.id);
+          trajUnit.addStateChangeCallback(listener);
+          listeners.set(unit.id, listener);
+        }
+      }
+    });
+
+    // Cleanup listeners
+    return () => {
+      listeners.forEach((listener, unitId) => {
+        const trajUnit = unitsRef.current.get(unitId);
+        if (trajUnit) {
+          trajUnit.removeStateChangeCallback(listener);
+        }
+      });
+    };
+  }, [units]);
+
+  // Remove setTimeout from hover handler
+  useEffect(() => {
+    if (!selectedUnitId || !onCellHover) return;
+    
+    const formattedData = CellDataFormatter.formatCellData(
+      onCellHover.data,
+      onCellHover.experiment,
+      onCellHover.evoRunId,
+      onCellHover.config
+    );
+  
+    if (formattedData) {
+      const unit = unitsRef.current.get(selectedUnitId);
+      if (!unit) return;
+
+      if (unit.type === UNIT_TYPES.TRAJECTORY) {
+        unit.handleCellHover(formattedData);
+        // UI updates will happen through state change callback
+      } else if (unit.type === UNIT_TYPES.SEQUENCING && onCellHover.config?.addToSequence) {
+        unit.toggleSequenceItem(formattedData);
+        forceSequenceUpdate(selectedUnitId);
+      }
+    }
+  }, [selectedUnitId, onCellHover]);
+
   return (
     <div className="h-fit max-h-[calc(100vh-5rem)] bg-gray-900/95 backdrop-blur border-r border-gray-800 overflow-y-auto">
       <div className="p-2 flex flex-col gap-2 min-w-[16rem]">
@@ -759,5 +912,3 @@ const UnitsPanel = ({
     </div>
   );
 };
-
-export default UnitsPanel;
