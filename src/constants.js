@@ -19,7 +19,8 @@ export const DEFAULT_UNIT_CONFIGS = {
     volume: -10,
     active: true,
     muted: false,
-    soloed: false
+    soloed: false,
+    maxVoices: 4
   },
   [UNIT_TYPES.SEQUENCING]: {
     active: true,

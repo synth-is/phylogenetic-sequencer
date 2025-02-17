@@ -180,57 +180,63 @@ export class TrajectoryUnit extends BaseUnit {
         // Store callback for this genome
         this.loopStateCallbacks.set(genomeId, cellData.config?.onLoopStateChanged);
 
+        // If this voice is already looping, stop it
         if (this.loopingVoices.has(genomeId)) {
           console.log('Stopping looping voice:', genomeId);
           this.loopingVoices.delete(genomeId);
           this.updateVoiceMix();
-          // Notify that loop has stopped
           cellData.config?.onLoopStateChanged?.(false);
           return;
         }
 
-        if( ! this.loopingVoices.has(genomeId) ) {
-            // Clean up old looping voices if at max
-            if (this.loopingVoices.size >= this.maxVoices) {
-                const [oldestId] = this.loopingVoices.keys();
-                console.log('Cleaning up old looping voice:', oldestId);
-                this.loopingVoices.delete(oldestId);
-                this.updateVoiceMix();
-            }
+        if (!this.loopingVoices.has(genomeId)) {
+          // Clean up old looping voices while respecting maxVoices
+          while (this.loopingVoices.size >= this.maxVoices) {
+            // Get oldest voice
+            const [oldestId] = this.loopingVoices.keys();
+            console.log('Cleaning up old looping voice due to maxVoices limit:', oldestId);
+            
+            // Stop the callback for the old voice
+            const callback = this.loopStateCallbacks.get(oldestId);
+            if (callback) callback(false);
+            
+            this.loopingVoices.delete(oldestId);
+            this.loopStateCallbacks.delete(oldestId);
+          }
 
-            console.log('Looping voice triggered:', genomeId);
-            const voice = el.mul(
-            el.mc.sample(
-                {
-                channels: 1,
-                path: vfsKey,
-                mode: 'loop',
-                playbackRate: this.playbackRate,
-                startOffset: 0,
-                endOffset: 0,
-                key: `looping-${genomeId}-${this.id}` // Add unique key
-                },
-                el.const({ 
-                  key: `trigger-${genomeId}-${this.id}`, // Add unique trigger key
-                  value: 1 
-                })
-            )[0], // Take first channel from multichannel output
-            el.const({ 
-              key: `gain-${genomeId}-${this.id}`, // Add unique gain key
-              value: 1 / this.maxVoices 
-            })
-            );
+          console.log('Looping voice triggered:', genomeId);
+          const voice = el.mul(
+          el.mc.sample(
+              {
+              channels: 1,
+              path: vfsKey,
+              mode: 'loop',
+              playbackRate: this.playbackRate,
+              startOffset: 0,
+              endOffset: 0,
+              key: `looping-${genomeId}-${this.id}` // Add unique key
+              },
+              el.const({ 
+                key: `trigger-${genomeId}-${this.id}`, // Add unique trigger key
+                value: 1 
+              })
+          )[0], // Take first channel from multichannel output
+          el.const({ 
+            key: `gain-${genomeId}-${this.id}`, // Add unique gain key
+            value: 1 / this.maxVoices 
+          })
+          );
 
-            // Store voice with metadata and timestamp for age tracking
-            this.loopingVoices.set(genomeId, {
-            voice,
-            audioUrl,
-            duration: audioData.duration,
-            timestamp: Date.now(),
-            isLooping: true  // Add this flag
-            });
+          // Store voice with metadata and timestamp for age tracking
+          this.loopingVoices.set(genomeId, {
+          voice,
+          audioUrl,
+          duration: audioData.duration,
+          timestamp: Date.now(),
+          isLooping: true  // Add this flag
+          });
 
-            cellData.config?.onLoopStateChanged?.(true);
+          cellData.config?.onLoopStateChanged?.(true);
         }
       } else { // one-off mode
         // Store callback before potentially superseding the voice

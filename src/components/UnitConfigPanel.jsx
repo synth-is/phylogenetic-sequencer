@@ -213,6 +213,14 @@ const UnitConfigPanel = ({ unit, units, onClose, onUpdateUnit }) => {
                       max={12} 
                       centered={true}
                     />
+                    <Slider 
+                      label="Max Voices" 
+                      value={unit.maxVoices || 4} 
+                      onChange={val => handleValueChange('maxVoices', val)} 
+                      min={1} 
+                      max={8} 
+                      step={1}
+                    />
                   </div>
                 </CollapsibleSection>
               )}
