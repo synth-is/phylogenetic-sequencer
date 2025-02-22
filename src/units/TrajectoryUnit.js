@@ -5,53 +5,30 @@ import { BaseUnit } from './BaseUnit';
 export class TrajectoryUnit extends BaseUnit {
   constructor(id) {
     super(id, UNIT_TYPES.TRAJECTORY);
-    // Remove renderer and context as they're now handled by AudioEngine
     this.active = true;
     this.muted = false;
     this.soloed = false;
     this.volume = -12;
     this.audioDataCache = new Map();
-    this.activeVoices = new Map();
+    this.oneOffVoices = new Map();
     this.maxVoices = 4;
-    this.reverbAmount = 5;
-    this.lastPlayedCell = null;
-    this.throttleTimeout = null;
-
-    // Add new properties
+    this.pitch = 0;
     this.playbackRate = 1.0;
-    this.attackTime = 0.001;  // Almost instant attack
-    this.decayTime = 0.001;   // Almost instant decay
-    this.sustainLevel = 1.0;   // Full sustain level
-    this.releaseTime = 0.001;  // Almost instant release
-    this.reverbMix = 0.3;
-    this.trajectoryMode = 'continuous'; // 'continuous' or 'discrete'
-    this.voiceOverlap = 'polyphonic'; // 'polyphonic' or 'monophonic'
 
-    // Add new properties for playback control
-    this.playbackMode = 'one-off'; // 'one-off' or 'looping'
-    this.loopingVoices = new Map(); // Track which sounds are currently looping
-    this.oneOffVoices = new Map(); // Track active one-off voices
-    this.voiceTimeouts = new Map(); // Add this line
-
-    // Add new maps to track pending and active sounds
-    this.pendingCallbacks = new Map(); // Store callbacks for each genome ID
-    this.activeGenomes = new Map(); // Track which genomes are actually playing
-
-    this.hoverDebounce = 50; // ms
-    this.lastHoverTimes = new Map();
-    this.highlightTimeouts = new Map(); // Add this line
-    this.loopStateCallbacks = new Map(); // Add this to track callbacks per genome
-
-    // Add trajectory recording state
-    this.trajectories = new Map(); // Map of trajectory ID to trajectory data
+    // Trajectory recording state
+    this.trajectories = new Map();
     this.isRecording = false;
     this.recordingStartTime = null;
     this.currentRecordingId = null;
     this.activeTrajectorySignals = new Map();
 
-    this.pitch = 0;
-    this.onVoicesChanged = null; // Add callback property
-    this.stateChangeCallbacks = new Set(); // Add this line
+    // Voice tracking
+    this.pendingCallbacks = new Map();
+    this.voiceTimeouts = new Map();
+    this.lastHoverTimes = new Map();
+    this.highlightTimeouts = new Map();
+    this.stateChangeCallbacks = new Set();
+    this.activeGenomes = new Map(); // Add this line to initialize activeGenomes
   }
 
   addStateChangeCallback(callback) {
@@ -112,50 +89,12 @@ export class TrajectoryUnit extends BaseUnit {
   
 
   async handleCellHover(cellData) {
-    console.log('TrajectoryUnit received hover:', {
-      id: this.id,
-      active: this.active,
-      muted: this.muted,
-      cellData,
-      hasCallback: !!cellData?.config?.onEnded,
-      playbackMode: this.playbackMode
-    });
-  
-    if (!this.active || this.muted || !cellData) {
-      return;
-    }
+    if (!this.active || this.muted || !cellData) return;
 
-    // Get AudioEngine instances
-    const context = this.audioEngine.getContext();
-    const renderer = this.audioEngine.getRenderer();
-    
-    if (!context || !renderer) {
-      console.error('AudioEngine not properly initialized');
-      return;
-    }
-  
     const { audioUrl, genomeId } = cellData;
     if (!audioUrl || !genomeId) return;
 
-    const now = Date.now();
-    const lastHover = this.lastHoverTimes.get(genomeId) || 0;
-    
-    // Debounce rapid hover events
-    if (now - lastHover < this.hoverDebounce) {
-      console.log('TrajectoryUnit debouncing rapid hover:', genomeId);
-      return;
-    }
-    
-    this.lastHoverTimes.set(genomeId, now);
-  
     try {
-      const context = this.audioEngine.getContext();
-      const renderer = this.audioEngine.getRenderer();
-      
-      if (!context || !renderer) {
-        throw new Error('AudioEngine not properly initialized');
-      }
-
       const vfsKey = `sound-${genomeId}`;
       let audioData;
   
@@ -163,255 +102,100 @@ export class TrajectoryUnit extends BaseUnit {
         const response = await fetch(audioUrl);
         if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
         const arrayBuffer = await response.arrayBuffer();
-        audioData = await context.decodeAudioData(arrayBuffer);
+        audioData = await this.audioEngine.getContext().decodeAudioData(arrayBuffer);
         this.audioDataCache.set(vfsKey, audioData);
+        
+        await this.audioEngine.getRenderer().updateVirtualFileSystem({
+          [vfsKey]: audioData.getChannelData(0)
+        });
       } else {
         audioData = this.audioDataCache.get(vfsKey);
       }
-  
-      // Ensure sample is in VFS
-      const vfsUpdate = {};
-      vfsUpdate[vfsKey] = audioData.getChannelData(0);
-      await renderer.updateVirtualFileSystem(vfsUpdate);
 
-      // Clear any existing highlight timeout for this genome
-      if (this.highlightTimeouts.has(genomeId)) {
-        clearTimeout(this.highlightTimeouts.get(genomeId));
-        this.highlightTimeouts.delete(genomeId);
-      }
+      // Create voice with proper trigger
+      const voiceId = `${genomeId}-${Date.now()}`;
+      const voice = el.mul(
+        el.mc.sample({
+          channels: 1,
+          path: vfsKey,
+          mode: 'trigger',
+          playbackRate: this.playbackRate,
+          key: `voice-${voiceId}`
+        },
+        el.const({
+          key: `trigger-${voiceId}`,
+          value: 1
+        }))[0],
+        el.const({
+          key: `gain-${voiceId}`,
+          value: 1 / this.maxVoices
+        })
+      );
 
-      // Set a fallback timeout to ensure highlight gets cleared
-      const highlightTimeout = setTimeout(() => {
-        console.log('Forcing highlight cleanup for:', genomeId);
-        if (!this.loopingVoices.has(genomeId)) {
-          cellData.config?.onEnded?.();
-        }
-      }, 5000); // 5 second fallback
-
-      this.highlightTimeouts.set(genomeId, highlightTimeout);
-
-      if (this.playbackMode === 'looping') {
-        // Store callback for this genome
-        this.loopStateCallbacks.set(genomeId, cellData.config?.onLoopStateChanged);
-
-        // If this voice is already looping, stop it
-        if (this.loopingVoices.has(genomeId)) {
-          console.log('Stopping looping voice:', genomeId);
-          this.loopingVoices.delete(genomeId);
-          this.updateVoiceMix();
-          cellData.config?.onLoopStateChanged?.(false);
-          this.onVoicesChanged?.();
-          this.notifyStateChange(); // Add this line after voice is removed
-          return;
-        }
-
-        if (!this.loopingVoices.has(genomeId)) {
-          // Clean up old looping voices while respecting maxVoices
-          while (this.loopingVoices.size >= this.maxVoices) {
-            // Get oldest voice
-            const [oldestId] = this.loopingVoices.keys();
-            console.log('Cleaning up old looping voice due to maxVoices limit:', oldestId);
-            
-            // Stop the callback for the old voice
-            const callback = this.loopStateCallbacks.get(oldestId);
-            if (callback) callback(false);
-            
-            this.loopingVoices.delete(oldestId);
-            this.loopStateCallbacks.delete(oldestId);
-          }
-
-          console.log('Looping voice triggered:', genomeId);
-          const voice = el.mul(
-          el.mc.sample(
-              {
-              channels: 1,
-              path: vfsKey,
-              mode: 'loop',
-              playbackRate: this.playbackRate,
-              startOffset: 0,
-              endOffset: 0,
-              key: `looping-${genomeId}-${this.id}` // Add unique key
-              },
-              el.const({ 
-                key: `trigger-${genomeId}-${this.id}`, // Add unique trigger key
-                value: 1 
-              })
-          )[0], // Take first channel from multichannel output
-          el.const({ 
-            key: `gain-${genomeId}-${this.id}`, // Add unique gain key
-            value: 1 / this.maxVoices 
-          })
-          );
-
-          // Store voice with metadata and timestamp for age tracking
-          this.loopingVoices.set(genomeId, {
-          voice,
-          audioUrl,
-          duration: audioData.duration,
-          timestamp: Date.now(),
-          isLooping: true  // Add this flag
-          });
-
-          cellData.config?.onLoopStateChanged?.(true);
-          this.onVoicesChanged?.();
-          this.notifyStateChange(); // Add this line after voice is created
-        }
-      } else { // one-off mode
-        // Store callback before potentially superseding the voice
-        this.pendingCallbacks.set(genomeId, cellData.config?.onEnded);
-
-        // Clean up old voices if at max
-        if (this.oneOffVoices.size >= this.maxVoices) {
-          const [oldestVoiceId] = this.oneOffVoices.keys();
-          const oldestGenomeId = oldestVoiceId.split('-')[0];
-          
-          // Call onEnded for the superseded voice
-          console.log('Superseding voice:', {
-            oldestVoiceId,
-            oldestGenomeId,
-            hasCallback: !!this.pendingCallbacks.get(oldestGenomeId)
-          });
-
-          // Only call onEnded if the genome isn't also playing in looping mode
-          if (!this.loopingVoices.has(oldestGenomeId)) {
-            const callback = this.pendingCallbacks.get(oldestGenomeId);
-            if (callback) callback();
-          }
-
-          this.oneOffVoices.delete(oldestVoiceId);
-          this.pendingCallbacks.delete(oldestGenomeId);
-          this.updateVoiceMix();
-        }
-
-        // Create one-off voice - exactly matching createOneOffVoice from test-component.js
-        const voiceId = `${genomeId}-${Date.now()}`;
-        const voice = el.mul(
-          el.mc.sample(
-            {
-              channels: 1,
-              path: vfsKey, 
-              mode: 'trigger',
-              playbackRate: this.playbackRate,
-              startOffset: 0,
-              endOffset: 0
-            },
-            el.const({ key: `${voiceId}-trigger`, value: 1 }), // Single trigger with unique key
-          )[0], // Take first channel from multichannel output
-          el.const({ value: 1 / this.maxVoices }) // Dynamic gain scaling
-        );
-
-        // Store the voice and setup cleanup
-        this.oneOffVoices.set(voiceId, voice);
-        this.updateVoiceMix();
-
-        // Track that this genome is now actually playing
-        this.activeGenomes.set(genomeId, {
-          mode: 'one-off',
-          timestamp: Date.now()
-        });
-
-        // Calculate actual sound duration including release time
-        const totalDuration = audioData.duration + this.releaseTime;
-        
-        console.log('Setting up voice completion timeout:', {
-          voiceId,
-          genomeId,
-          duration: totalDuration,
-          hasCallback: !!cellData?.config?.onEnded,  // Add callback check to debug log
-          callbackType: typeof cellData?.config?.onEnded  // Log callback type
-        });
-
-        // Remove voice and trigger callback after sound fully completes
-        const timeoutId = setTimeout(() => {
-          console.log('Voice completion timeout fired:', {
-            voiceId,
-            genomeId,
-            activeVoicesForGenome: Array.from(this.oneOffVoices.keys())
-              .filter(id => id.startsWith(genomeId)),
-            hasLoopingVoice: this.loopingVoices.has(genomeId),
-            hasCallback: !!this.pendingCallbacks.get(genomeId)  // Add callback check here too
-          });
-
-          this.oneOffVoices.delete(voiceId);
-          this.voiceTimeouts.delete(voiceId);
-          this.activeGenomes.delete(genomeId);
-          this.updateVoiceMix();
-          
-          // Only trigger onEnded if this was the last voice for this genome
-          // AND there's no looping voice for this genome
-          const activeVoicesForGenome = Array.from(this.oneOffVoices.keys())
-            .filter(id => id.startsWith(genomeId));
-          
-          if (activeVoicesForGenome.length === 0 && !this.loopingVoices.has(genomeId)) {
-            console.log('Calling onEnded callback for genome:', genomeId);
-            const callback = this.pendingCallbacks.get(genomeId);
-            if (callback) callback();
-            this.pendingCallbacks.delete(genomeId);
-          } else {
-            console.log('Skipping onEnded - active voices remain or looping:', {
-              activeOneOffs: activeVoicesForGenome,
-              isLooping: this.loopingVoices.has(genomeId)
-            });
-          }
-        }, totalDuration * 1000);
-
-        this.voiceTimeouts.set(voiceId, timeoutId);
-      }
-
+      // Store callback and voice
+      this.pendingCallbacks.set(genomeId, cellData.config?.onEnded);
+      this.oneOffVoices.set(voiceId, voice);
       this.updateVoiceMix();
 
+      // Clean up old voices
+      if (this.oneOffVoices.size > this.maxVoices) {
+        const [oldestId] = this.oneOffVoices.keys();
+        const oldestGenomeId = oldestId.split('-')[0];
+        const callback = this.pendingCallbacks.get(oldestGenomeId);
+        if (callback) callback();
+        
+        this.oneOffVoices.delete(oldestId);
+        this.pendingCallbacks.delete(oldestGenomeId);
+        this.updateVoiceMix();
+      }
+
+      // Set up voice completion timeout
+      const totalDuration = audioData.duration + 0.1; // Add small release time
+      const timeoutId = setTimeout(() => {
+        this.oneOffVoices.delete(voiceId);
+        this.voiceTimeouts.delete(voiceId);
+        
+        const activeVoices = Array.from(this.oneOffVoices.keys())
+          .filter(id => id.startsWith(genomeId));
+        
+        if (activeVoices.length === 0) {
+          const callback = this.pendingCallbacks.get(genomeId);
+          if (callback) callback();
+          this.pendingCallbacks.delete(genomeId);
+        }
+        
+        this.updateVoiceMix();
+      }, totalDuration * 1000);
+
+      this.voiceTimeouts.set(voiceId, timeoutId);
+
     } catch (error) {
-      console.error(`TrajectoryUnit ${this.id} playback error:`, error);
-      console.log('Calling onEnded due to error');
-      cellData.config?.onEnded?.(); // Ensure callback is called even on error
+      console.error('TrajectoryUnit playback error:', error);
+      cellData.config?.onEnded?.();
     }
 
-    // Add recording functionality
     if (this.isRecording) {
       this.recordEvent(cellData);
     }
   }
 
-  // Add new methods for voice management
-  stopLoopingVoice(genomeId) {
-    if (this.loopingVoices.has(genomeId)) {
-      this.loopingVoices.delete(genomeId);
-      this.updateVoiceMix();
-    }
-  }
-
   updateVoiceMix() {
-    // Only mix voices if unit is active
     if (!this.active) {
       this.updateAudioNodes([]);
       return;
     }
 
-    // Combine all active voices
-    const loopingVoices = Array.from(this.loopingVoices.values()).map(v => v.voice);
     const oneOffVoices = Array.from(this.oneOffVoices.values());
-    const voices = [...loopingVoices, ...oneOffVoices];
+    const trajectorySignals = Array.from(this.activeTrajectorySignals.values());
+    
+    const voices = [...oneOffVoices, ...trajectorySignals];
+    
+    const mix = voices.length === 0 ? el.const({value: 0}) :
+               voices.length === 1 ? voices[0] :
+               el.add(...voices);
 
-    let mix = voices.length === 0 ? el.const({value: 0}) :
-             voices.length === 1 ? voices[0] :
-             el.add(...voices);
-
-    // Apply reverb if enabled
-    if (this.reverbAmount > 0) {
-      // ...existing reverb code...
-    }
-
-    // Add trajectory signals to the mix
-    if (this.activeTrajectorySignals.size > 0) {
-      const trajectorySignals = Array.from(this.activeTrajectorySignals.values());
-      const trajectoryMix = trajectorySignals.length === 1 ? 
-        trajectorySignals[0] : el.add(...trajectorySignals);
-      mix = mix ? el.add(mix, trajectoryMix) : trajectoryMix;
-    }
-
-    // Instead of directly rendering, update nodes in AudioEngine
     this.updateAudioNodes(mix ? [mix] : []);
-    this.onVoicesChanged?.();
+    this.notifyStateChange();
   }
 
   // Update config method to handle playback mode
@@ -424,45 +208,13 @@ export class TrajectoryUnit extends BaseUnit {
       return; // Exit early to prevent pitch/other updates
     }
 
-    // Handle pitch changes for both trajectory events and looping voices
+    // Handle pitch changes for trajectory events
     if (config.pitch !== undefined && config.pitch !== this.pitch) {
       this.pitch = config.pitch;
       this.playbackRate = Math.pow(2, config.pitch / 12);
       
       // Update trajectories
       this.updateTrajectoryPlaybackRates(config.pitch);
-      
-      // Also update any active looping voices with proper keys
-      this.loopingVoices.forEach((voiceData, genomeId) => {
-        const vfsKey = `sound-${genomeId}`;
-        const voice = el.mul(
-          el.mc.sample(
-            {
-              channels: 1,
-              path: vfsKey,
-              mode: 'loop',
-              playbackRate: this.playbackRate,
-              startOffset: 0,
-              endOffset: 0,
-              key: `looping-${genomeId}-${this.id}` // Add unique key
-            },
-            el.const({ 
-              key: `trigger-${genomeId}-${this.id}`, // Add unique trigger key
-              value: 1 
-            })
-          )[0],
-          el.const({ 
-            key: `gain-${genomeId}-${this.id}`, // Add unique gain key
-            value: 1 / this.maxVoices 
-          })
-        );
-        
-        // Update voice in map
-        this.loopingVoices.set(genomeId, {
-          ...voiceData,
-          voice
-        });
-      });
       
       // Force audio update
       this.updateVoiceMix();
@@ -510,19 +262,6 @@ export class TrajectoryUnit extends BaseUnit {
   // Add method to update playback parameters
   updatePlaybackParams(params) {
     Object.assign(this, params);
-  }
-
-  // Add method to clean up old voices if needed
-  cleanupOldVoices() {
-    // Keep only the most recent maxVoices looping voices
-    if (this.loopingVoices.size > this.maxVoices) {
-      const sortedVoices = Array.from(this.loopingVoices.entries())
-        .sort((a, b) => b[1].timestamp - a[1].timestamp)
-        .slice(0, this.maxVoices);
-      
-      this.loopingVoices = new Map(sortedVoices);
-      this.updateVoiceMix();
-    }
   }
 
   cleanup() {
@@ -582,20 +321,18 @@ export class TrajectoryUnit extends BaseUnit {
 
   // Add a new method to check if a genome has any kind of active voices
   hasAnyActiveVoices(genomeId) {
-    const hasLoopingVoice = this.loopingVoices.has(genomeId);
     const hasOneOffVoice = Array.from(this.oneOffVoices.keys())
       .some(id => id.startsWith(genomeId));
     const isTrackedAsActive = this.activeGenomes.has(genomeId);
     
     console.log('Checking active voices:', {
       genomeId,
-      hasLoopingVoice,
       hasOneOffVoice,
       isTrackedAsActive,
       activeGenomes: Array.from(this.activeGenomes.keys())
     });
     
-    return hasLoopingVoice || hasOneOffVoice;
+    return hasOneOffVoice;
   }
 
   startTrajectoryRecording() {
@@ -864,45 +601,5 @@ export class TrajectoryUnit extends BaseUnit {
       this.activeTrajectorySignals.delete(trajectoryId);
       this.updateVoiceMix();
     }
-  }
-
-  // Add method to update looping voice parameters
-  updateLoopingVoice(genomeId, updates) {
-    if (!this.loopingVoices.has(genomeId)) return;
-
-    const voiceData = this.loopingVoices.get(genomeId);
-    const vfsKey = `sound-${genomeId}`;
-    
-    // Create new voice with updated parameters
-    const voice = el.mul(
-      el.mc.sample(
-        {
-          channels: 1,
-          path: vfsKey,
-          mode: 'loop',
-          playbackRate: updates.playbackRate || this.playbackRate,
-          startOffset: Math.floor((updates.startOffset || 0) * voiceData.duration),
-          endOffset: Math.floor((updates.stopOffset || 0) * voiceData.duration),
-          key: `looping-${genomeId}-${this.id}`
-        },
-        el.const({ 
-          key: `trigger-${genomeId}-${this.id}`,
-          value: 1 
-        })
-      )[0],
-      el.const({ 
-        key: `gain-${genomeId}-${this.id}`,
-        value: 1 / this.maxVoices 
-      })
-    );
-
-    // Update voice in map with new parameters
-    this.loopingVoices.set(genomeId, {
-      ...voiceData,
-      voice,
-      ...updates
-    });
-
-    this.updateVoiceMix();
   }
 }

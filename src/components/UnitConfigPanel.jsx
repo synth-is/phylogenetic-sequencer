@@ -49,7 +49,7 @@ const CollapsibleSection = ({ title, children }) => {
   );
 };
 
-const UnitConfigPanel = ({ unit, units, onClose, onUpdateUnit }) => {
+export default function UnitConfigPanel({ unit, units, onClose, onUpdateUnit }) {
   const [showDebugger, setShowDebugger] = useState(false);
   const [activeTab, setActiveTab] = useState('Unit');
   const [liveCodeEngine, setLiveCodeEngine] = useState(unit.liveCodeEngine || 'Strudel');
@@ -173,38 +173,10 @@ const UnitConfigPanel = ({ unit, units, onClose, onUpdateUnit }) => {
         <div className="p-4 overflow-y-auto">
           {activeTab === 'Unit' && (
             <>
-              {/* Only show Playback section for TrajectoryUnit */}
-              {unit.type === UNIT_TYPES.TRAJECTORY && (
+              {/* Show Playback section for both TrajectoryUnit and LoopingUnit */}
+              {(unit.type === UNIT_TYPES.TRAJECTORY || unit.type === UNIT_TYPES.LOOPING) && (
                 <CollapsibleSection title="Playback">
                   <div className="space-y-2">
-                    <label className="text-sm text-white">Mode</label>
-                    <div className="flex gap-2">
-                      <button
-                        onClick={() => handleValueChange('playbackMode', 'one-off')}
-                        className={`flex-1 px-2 py-1 rounded text-xs ${
-                          (!unit.playbackMode || unit.playbackMode === 'one-off')
-                            ? 'bg-blue-600 text-white'
-                            : 'bg-gray-700 text-gray-400'
-                        }`}
-                      >
-                        One-Off
-                      </button>
-                      <button
-                        onClick={() => handleValueChange('playbackMode', 'looping')}
-                        className={`flex-1 px-2 py-1 rounded text-xs ${
-                          unit.playbackMode === 'looping'
-                            ? 'bg-blue-600 text-white'
-                            : 'bg-gray-700 text-gray-400'
-                        }`}
-                      >
-                        Looping
-                      </button>
-                    </div>
-                    <p className="text-xs text-gray-400">
-                      {unit.playbackMode === 'looping' 
-                        ? 'Hover over nodes to loop sounds; hover again to stop the looping'
-                        : 'Hover nodes to play sounds once'}
-                    </p>
                     <Slider 
                       label="Pitch" 
                       value={unit.pitch || 0} 
@@ -486,6 +458,4 @@ const UnitConfigPanel = ({ unit, units, onClose, onUpdateUnit }) => {
       </div>
     </div>
   );
-};
-
-export default UnitConfigPanel;
+}

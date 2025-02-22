@@ -8,7 +8,8 @@ export const LINEAGE_SOUNDS_BUCKET_HOST = "https://ns9648k.web.sigma2.no";
 
 export const UNIT_TYPES = {
   TRAJECTORY: 'TRAJECTORY',
-  SEQUENCING: 'SEQUENCING'
+  SEQUENCING: 'SEQUENCING',
+  LOOPING: 'LOOPING'  // Add new unit type
 };
 
 export const DEFAULT_UNIT_CONFIGS = {
@@ -38,5 +39,13 @@ export const DEFAULT_UNIT_CONFIGS = {
     active: true,
     muted: false,
     soloed: false
+  },
+  [UNIT_TYPES.LOOPING]: {
+    volume: -10,
+    active: true,
+    muted: false,
+    soloed: false,
+    maxVoices: 4,
+    pitch: 0
   }
 };
