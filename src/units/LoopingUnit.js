@@ -14,19 +14,22 @@ export class LoopingUnit extends BaseUnit {
     this.pitch = 0;
     this.playbackRate = 1.0;
 
+    // Sync-related properties
+    this.syncEnabled = false;
+    this.masterLoopId = null;
+    this.masterLoopDuration = null;
+
     this.loopingVoices = new Map();
     this.stateChangeCallbacks = new Set();
-    this.lastHoverTimes = new Map();
-    this.initialized = false; // Add this line
+    this.initialized = false;
   }
 
   async initialize() {
     try {
       console.log(`Initializing LoopingUnit ${this.id}`);
       await super.initialize();
-      this.initialized = true; // Add this line
+      this.initialized = true;
       
-      // Get references from AudioEngine
       const context = this.audioEngine.getContext();
       const renderer = this.audioEngine.getRenderer();
 
@@ -40,6 +43,28 @@ export class LoopingUnit extends BaseUnit {
       console.error(`LoopingUnit ${this.id} initialization error:`, err);
       return false;
     }
+  }
+
+  getSharedClock() {
+    // If sync is enabled and we have a master loop, use its duration
+    if (this.syncEnabled && this.masterLoopDuration) {
+      const rate = 1 / this.masterLoopDuration;
+      return el.phasor(el.const({
+        key: `sync-rate-${this.id}`,
+        value: rate
+      }));
+    }
+    return null;
+  }
+
+  getTriggerSignal() {
+    const clock = this.getSharedClock();
+    if (this.syncEnabled && clock) {
+      // Create trigger pulse when phasor resets
+      return el.le(clock, 0.01);
+    }
+    // Default: constant trigger for free-running loops
+    return el.const({ value: 1 });
   }
 
   async handleCellHover(cellData) {
@@ -64,35 +89,28 @@ export class LoopingUnit extends BaseUnit {
         await this.audioEngine.getRenderer().updateVirtualFileSystem({
           [vfsKey]: audioData.getChannelData(0)
         });
+
+        // If this is the first loop, set it as the master
+        if (this.loopingVoices.size === 0) {
+          console.log('Setting master loop:', genomeId, audioData.duration);
+          this.masterLoopId = genomeId;
+          this.masterLoopDuration = audioData.duration;
+        }
       } else {
         audioData = this.audioDataCache.get(vfsKey);
       }
 
       // Toggle looping state
       if (this.loopingVoices.has(genomeId)) {
-        // Stop if already playing
         this.stopLoopingVoice(genomeId);
         cellData.config?.onLoopStateChanged?.(false);
       } else {
-        // Create and start new looping voice
-        const voice = el.mul(
-          el.mc.sample({
-            channels: 1,
-            path: vfsKey,
-            mode: 'loop',
-            playbackRate: this.playbackRate,
-            key: `looping-${genomeId}-${this.id}`
-          },
-          el.const({ 
-            key: `trigger-${genomeId}-${this.id}`,
-            value: 1 
-          }))[0],
-          el.const({ 
-            key: `gain-${genomeId}-${this.id}`,
-            value: 1 / this.maxVoices 
-          })
-        );
+        if (this.loopingVoices.size >= this.maxVoices) {
+          const [oldestId] = this.loopingVoices.keys();
+          this.stopLoopingVoice(oldestId);
+        }
 
+        const voice = this.createLoopingVoice(genomeId, audioData);
         this.loopingVoices.set(genomeId, {
           voice,
           audioUrl: cellData.audioUrl,
@@ -102,92 +120,59 @@ export class LoopingUnit extends BaseUnit {
 
         this.updateVoiceMix();
         cellData.config?.onLoopStateChanged?.(true);
-        this.notifyStateChange(); // Add this line to trigger UI update
       }
 
+      this.notifyStateChange();
     } catch (error) {
       console.error('LoopingUnit error:', error);
       cellData.config?.onLoopStateChanged?.(false);
     }
   }
 
-  async startLoopingVoice(genomeId, cellData, audioData) {
-    while (this.loopingVoices.size >= this.maxVoices) {
-      const [oldestId] = this.loopingVoices.keys();
-      this.stopLoopingVoice(oldestId);
-    }
-
-    this.loopingVoices.set(genomeId, {
-      voice: this.createLoopingVoice(genomeId, audioData),
-      audioUrl: cellData.audioUrl,
-      duration: audioData.duration,
-      timestamp: Date.now(),
-      offset: 0.5,
-      playbackRate: this.playbackRate,
-      startOffset: 0,
-      stopOffset: 0
-    });
-
-    this.updateVoiceMix();
-  }
-
-  stopLoopingVoice(genomeId) {
-    if (this.loopingVoices.has(genomeId)) {
-      this.loopingVoices.delete(genomeId);
-      this.updateVoiceMix();
-      this.notifyStateChange(); // Add this line
-    }
-  }
-
-  updateLoopingVoice(genomeId, updates) {
-    if (!this.loopingVoices.has(genomeId)) return;
-
-    const voiceData = this.loopingVoices.get(genomeId);
-    const vfsKey = `sound-${genomeId}`;
-    const audioData = this.audioDataCache.get(vfsKey);
-    
-    this.loopingVoices.set(genomeId, {
-      ...voiceData,
-      ...updates,
-      voice: this.createLoopingVoice(genomeId, audioData, updates)
-    });
-
-    this.updateVoiceMix();
-    this.notifyStateChange();
-  }
-
   createLoopingVoice(genomeId, audioData, params = {}) {
     const {
       offset = 0.5,
-      playbackRate = this.playbackRate,
-      startOffset = 0,
-      stopOffset = 0
+      playbackRate = this.playbackRate
     } = params;
 
     const vfsKey = `sound-${genomeId}`;
-    const phaseOffset = Math.floor(offset * audioData.duration * this.audioEngine.getContext().sampleRate);
-
-    // Remove timestamps from keys to maintain voice continuity
+    
     return el.mul(
       el.mc.sample({
         channels: 1,
         path: vfsKey,
         mode: 'loop',
         playbackRate,
-        startOffset: Math.floor(startOffset * audioData.duration * this.audioEngine.getContext().sampleRate),
-        endOffset: Math.floor(stopOffset * audioData.duration * this.audioEngine.getContext().sampleRate),
-        phaseOffset,
-        key: `looping-${genomeId}-${this.id}` // Remove timestamp to maintain voice
+        key: `looping-${genomeId}-${this.id}`
       },
+      this.getTriggerSignal())[0],
       el.const({ 
-        key: `trigger-${genomeId}-${this.id}`, // Remove timestamp
-        value: 1 
-      }))[0],
-      el.const({ 
-        key: `gain-${genomeId}-${this.id}`, // Remove timestamp
+        key: `gain-${genomeId}-${this.id}`,
         value: 1 / this.maxVoices 
       })
     );
+  }
+
+  stopLoopingVoice(genomeId) {
+    if (this.loopingVoices.has(genomeId)) {
+      this.loopingVoices.delete(genomeId);
+      
+      // If we stopped the master loop, find new master
+      if (genomeId === this.masterLoopId) {
+        const firstLoop = this.loopingVoices.entries().next().value;
+        if (firstLoop) {
+          const [newMasterId, newMasterData] = firstLoop;
+          this.masterLoopId = newMasterId;
+          this.masterLoopDuration = newMasterData.duration;
+        } else {
+          this.masterLoopId = null;
+          this.masterLoopDuration = null;
+        }
+      }
+      
+      this.updateVoiceMix();
+      this.notifyStateChange();
+    }
   }
 
   updateVoiceMix() {
@@ -199,10 +184,18 @@ export class LoopingUnit extends BaseUnit {
     console.log('LoopingUnit updateVoiceMix:', {
       unitId: this.id,
       voiceCount: this.loopingVoices.size,
-      voices: Array.from(this.loopingVoices.entries()).map(([id, data]) => ({
-        id,
-        hasVoice: !!data.voice
-      }))
+      masterLoop: this.masterLoopId,
+      syncEnabled: this.syncEnabled
+    });
+
+    // Recreate all voices using their individual stored pitches
+    this.loopingVoices.forEach((voiceData, genomeId) => {
+      const audioData = this.audioDataCache.get(`sound-${genomeId}`);
+      // Use the voice's stored pitch/playbackRate instead of the master rate
+      voiceData.voice = this.createLoopingVoice(genomeId, audioData, {
+        playbackRate: voiceData.playbackRate || this.playbackRate,
+        pitch: voiceData.pitch || this.pitch
+      });
     });
 
     const voices = Array.from(this.loopingVoices.values()).map(v => v.voice);
@@ -213,15 +206,30 @@ export class LoopingUnit extends BaseUnit {
     this.updateAudioNodes(mix ? [mix] : []);
   }
 
+  getMasterLoopInfo() {
+    if (!this.masterLoopId) return null;
+    
+    return {
+      id: this.masterLoopId,
+      duration: this.masterLoopDuration
+    };
+  }
+
+  toggleSync(enabled) {
+    this.syncEnabled = enabled;
+    this.updateVoiceMix();
+    this.notifyStateChange();
+  }
+
   cleanup() {
     this.audioDataCache.clear();
     this.loopingVoices.clear();
     this.stateChangeCallbacks.clear();
-    this.lastHoverTimes.clear();
+    this.masterLoopId = null;
+    this.masterLoopDuration = null;
     super.cleanup();
   }
 
-  // Add state change notification system
   addStateChangeCallback(callback) {
     this.stateChangeCallbacks.add(callback);
   }
@@ -235,49 +243,82 @@ export class LoopingUnit extends BaseUnit {
   }
 
   updateConfig(config) {
-    // Handle state changes that need immediate audio update
-    if (config.soloed !== undefined && config.soloed !== this.soloed) {
-      this.soloed = config.soloed;
-      this.updateVoiceMix();
-      return;
-    }
-
-    // Handle pitch changes
+    // Handle pitch changes for looping voices
     if (config.pitch !== undefined && config.pitch !== this.pitch) {
       this.pitch = config.pitch;
       this.playbackRate = Math.pow(2, config.pitch / 12);
       
-      // Update all active voices with new playback rate, maintaining existing voice states
-      this.loopingVoices.forEach((voiceData, genomeId) => {
-        voiceData.playbackRate = this.playbackRate; // Update stored playbackRate
-        const updatedVoice = this.createLoopingVoice(genomeId, 
-          this.audioDataCache.get(`sound-${genomeId}`), 
-          {
-            ...voiceData,
-            playbackRate: this.playbackRate
-          }
-        );
-        voiceData.voice = updatedVoice; // Update voice directly instead of recreating map entry
+      // Update all looping voices with new master pitch
+      const playingGenomes = Array.from(this.loopingVoices.keys());
+      playingGenomes.forEach(genomeId => {
+        const voiceData = this.loopingVoices.get(genomeId);
+        this.updateLoopingVoice(genomeId, {
+          ...voiceData,
+          pitch: config.pitch // Update voice pitch to match master
+        });
       });
-      
-      this.updateVoiceMix();
-    }
-
-    // Handle max voices changes
-    if (config.maxVoices !== undefined && config.maxVoices !== this.maxVoices) {
-      this.maxVoices = config.maxVoices;
-      
-      // Remove excess voices if needed
-      while (this.loopingVoices.size > this.maxVoices) {
-        const [oldestId] = this.loopingVoices.keys();
-        this.stopLoopingVoice(oldestId);
-      }
-      
-      this.updateVoiceMix();
     }
 
     // Handle other config changes
     Object.assign(this, config);
     this.updateVoiceMix();
+    this.notifyStateChange();
+  }
+
+  updateLoopingVoice(genomeId, updates) {
+    if (!this.loopingVoices.has(genomeId)) return;
+
+    const voiceData = this.loopingVoices.get(genomeId);
+    const vfsKey = `sound-${genomeId}`;
+    const audioData = this.audioDataCache.get(vfsKey);
+
+    if (!audioData) {
+      console.error('No audio data found for voice:', genomeId);
+      return;
+    }
+
+    // Calculate playback rate based on updates
+    let newPlaybackRate;
+    if (updates.pitch !== undefined) {
+      // Use provided pitch directly (from either master or individual control)
+      newPlaybackRate = Math.pow(2, updates.pitch / 12);
+    } else if (updates.playbackRate !== undefined) {
+      newPlaybackRate = updates.playbackRate;
+    } else {
+      newPlaybackRate = voiceData.playbackRate || this.playbackRate;
+    }
+
+    // Create voice with current parameters
+    const voice = el.mul(
+      el.mc.sample(
+        {
+          channels: 1,
+          path: vfsKey,
+          mode: 'loop',
+          playbackRate: newPlaybackRate,
+          startOffset: Math.floor((updates.startOffset ?? 0) * audioData.length),
+          endOffset: Math.floor((updates.stopOffset ?? 0) * audioData.length),
+          key: `looping-${genomeId}-${this.id}`
+        },
+        this.getTriggerSignal()
+      )[0],
+      el.const({ 
+        key: `gain-${genomeId}-${this.id}`,
+        value: 1 / this.maxVoices 
+      })
+    );
+
+    // Update voice data, ensuring pitch is always stored
+    this.loopingVoices.set(genomeId, {
+      ...voiceData,
+      ...updates,
+      voice,
+      playbackRate: newPlaybackRate,
+      pitch: updates.pitch ?? voiceData.pitch ?? this.pitch, // Maintain pitch value
+      timestamp: Date.now()
+    });
+
+    this.updateAudioNodes([...Array.from(this.loopingVoices.values()).map(v => v.voice)]);
+    this.notifyStateChange();
   }
 }

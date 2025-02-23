@@ -62,7 +62,8 @@ export default function UnitsPanel({
   onRemoveUnit,
   onToggleState,
   onUpdateVolume,
-  onCellHover 
+  onCellHover,
+  onUpdateUnit 
 }) {
   const [showTypeSelector, setShowTypeSelector] = useState(false);
   const { handleCellHover, updateUnitConfig } = useUnits();
@@ -466,93 +467,170 @@ export default function UnitsPanel({
 
   const renderLoopingControls = (unit) => {
     if (unit.type !== UNIT_TYPES.LOOPING) return null;
-  
+
     const loopingUnit = unitsRef.current.get(unit.id);
     if (!loopingUnit) return null;
-  
-    const loopingVoices = Array.from(loopingUnit.loopingVoices.entries()).map(([genomeId, data]) => ({
-      id: genomeId,
-      ...data
-    }));
-  
+
+    const masterLoopInfo = loopingUnit.getMasterLoopInfo();
+    const loopingVoices = Array.from(loopingUnit.loopingVoices.entries())
+      .map(([genomeId, data]) => ({
+        id: genomeId,
+        ...data
+      }));
+
     return (
-      <div className="mt-2 space-y-2">
-        {loopingVoices.length > 0 && (
-          <div className="space-y-1">
-            <div className="flex items-center gap-2 px-2 py-1 bg-gray-700/50 rounded-sm">
-              <span className="text-xs text-gray-300">
-                Looping Voices ({loopingVoices.length})
-              </span>
-              <div className="flex-1" />
-              <button
-                onClick={() => {
-                  loopingVoices.forEach(voice => {
-                    loopingUnit.stopLoopingVoice(voice.id);
-                  });
-                  forceTrajectoryUpdate(unit.id);
-                }}
-                className="px-1.5 py-0.5 text-xs rounded bg-red-600/50 text-white hover:bg-red-600"
-              >
-                Stop All
-              </button>
-              <button
-                onClick={() => {
-                  const element = document.querySelector(`#looping-voices-${unit.id}`);
-                  element.style.display = element.style.display === 'none' ? 'block' : 'none';
-                }}
-                className="p-1 text-xs bg-gray-600/50 hover:bg-gray-600 text-white rounded"
-              >
-                ▼
-              </button>
-            </div>
-  
-            <div 
-              id={`looping-voices-${unit.id}`}
-              className="ml-4 mt-1 space-y-2"
-              style={{ display: 'none' }}
+      <div className="space-y-2">
+        {/* Header with collapse control for entire list */}
+        <div className="flex items-center gap-2 px-2 py-1 bg-gray-700/50 rounded-sm">
+          <span className="text-xs text-gray-300">
+            Looping Voices ({loopingVoices.length})
+          </span>
+          <div className="flex-1" />
+          {loopingVoices.length > 0 && (
+            <button
+              onClick={() => {
+                loopingVoices.forEach(voice => {
+                  loopingUnit.stopLoopingVoice(voice.id);
+                });
+                forceTrajectoryUpdate(unit.id);
+              }}
+              className="px-1.5 py-0.5 text-xs rounded bg-red-600/50 text-white hover:bg-red-600"
             >
-              {loopingVoices.map(voice => (
+              Stop All
+            </button>
+          )}
+          <button
+            onClick={() => {
+              const element = document.querySelector(`#looping-voices-${unit.id}`);
+              element.style.display = element.style.display === 'none' ? 'block' : 'none';
+            }}
+            className="p-1 text-xs bg-gray-600/50 hover:bg-gray-600 text-white rounded"
+          >
+            ▼
+          </button>
+        </div>
+
+        {/* Collapsible section containing everything */}
+        <div 
+          id={`looping-voices-${unit.id}`}
+          className="space-y-2"
+          style={{ display: 'none' }}
+        >
+          {/* Sync Controls */}
+          <div className="flex items-center gap-2 py-1">
+            <label className="flex items-center gap-2 text-xs">
+              <input
+                type="checkbox"
+                checked={unit.syncEnabled}
+                onChange={(e) => {
+                  onUpdateUnit(unit.id, {
+                    ...unit,
+                    syncEnabled: e.target.checked
+                  });
+                }}
+                className="rounded bg-gray-800 border-gray-700"
+              />
+              <span className="text-gray-300">Sync to First Loop</span>
+            </label>
+          </div>
+
+          {/* Master Loop Info */}
+          {masterLoopInfo && (
+            <div className="text-xs text-gray-500 bg-gray-800/30 px-2 py-1 rounded flex items-center justify-between">
+              <span>Master: {masterLoopInfo.id.slice(-6)}</span>
+              <span>{masterLoopInfo.duration.toFixed(2)}s</span>
+            </div>
+          )}
+
+          {/* Individual Voices List */}
+          <div className="ml-4 space-y-1">
+            {loopingVoices.map(voice => (
+              <div key={voice.id}>
+                <div className="flex items-center gap-2 px-2 py-1 bg-gray-700/50 rounded-sm">
+                  <span className="text-xs text-gray-300">
+                    {voice.id.slice(-6)}
+                  </span>
+                  <button
+                    onClick={() => {
+                      loopingUnit.stopLoopingVoice(voice.id);
+                      forceTrajectoryUpdate(unit.id);
+                    }}
+                    className="px-1.5 py-0.5 text-xs rounded bg-red-600/50 text-white hover:bg-red-600"
+                  >
+                    Stop
+                  </button>
+                  <button
+                    onClick={() => {
+                      const element = document.querySelector(`#looping-voice-${voice.id}`);
+                      element.style.display = element.style.display === 'none' ? 'block' : 'none';
+                    }}
+                    className="p-1 text-xs bg-gray-600/50 hover:bg-gray-600 text-white rounded ml-auto"
+                  >
+                    ▼
+                  </button>
+                </div>
+
+                {/* Individual Voice Parameters */}
                 <div 
-                  key={voice.id}
-                  className="bg-gray-700/50 rounded-sm p-2 space-y-2"
+                  id={`looping-voice-${voice.id}`}
+                  className="ml-4 mt-1 space-y-2"
+                  style={{ display: 'none' }}
                 >
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs text-gray-300">
-                      {voice.id.slice(-6)}
-                    </span>
-                    <button
-                      onClick={() => {
-                        loopingUnit.stopLoopingVoice(voice.id);
+                  <div className="bg-gray-700/50 rounded-sm p-2 space-y-2">
+                    <Slider 
+                      label="Position"
+                      min={0}
+                      max={1}
+                      step={0.01}
+                      value={voice.offset || 0.5}
+                      onChange={val => {
+                        loopingUnit.updateLoopingVoice(voice.id, { offset: val });
                         forceTrajectoryUpdate(unit.id);
                       }}
-                      className="px-1.5 py-0.5 text-xs rounded bg-red-600/50 text-white hover:bg-red-600"
-                    >
-                      Stop
-                    </button>
-                  </div>
-  
-                  <details className="text-xs">
-                    <summary className="cursor-pointer text-gray-300">
-                      Parameters
-                    </summary>
-                    <TrajectoryEventParams
-                      event={{
-                        offset: voice.offset || 0.5, // Use existing offset if available
-                        playbackRate: voice.playbackRate || 1,
-                        startOffset: voice.startOffset || 0,
-                        stopOffset: voice.stopOffset || 0
-                      }}
-                      onUpdate={updates => {
-                        loopingUnit.updateLoopingVoice(voice.id, updates);
+                      centered={true}
+                    />
+                    
+                    <Slider 
+                      label="Playback Rate"
+                      min={0.25}
+                      max={4}
+                      step={0.25}
+                      value={voice.playbackRate || 1}
+                      onChange={val => {
+                        loopingUnit.updateLoopingVoice(voice.id, { playbackRate: val });
                         forceTrajectoryUpdate(unit.id);
                       }}
                     />
-                  </details>
+                    
+                    <Slider 
+                      label="Start Offset"
+                      min={0}
+                      max={1}
+                      step={0.01}
+                      value={voice.startOffset || 0}
+                      onChange={val => {
+                        loopingUnit.updateLoopingVoice(voice.id, { startOffset: val });
+                        forceTrajectoryUpdate(unit.id);
+                      }}
+                    />
+                    
+                    <Slider 
+                      label="Stop Offset"
+                      min={0}
+                      max={1}
+                      step={0.01}
+                      value={voice.stopOffset || 0}
+                      onChange={val => {
+                        loopingUnit.updateLoopingVoice(voice.id, { stopOffset: val });
+                        forceTrajectoryUpdate(unit.id);
+                      }}
+                    />
+                  </div>
                 </div>
-              ))}
-            </div>
+              </div>
+            ))}
           </div>
-        )}
+        </div>
       </div>
     );
   };

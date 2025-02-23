@@ -136,6 +136,7 @@ function MainContent({
               onRemoveUnit={props.handleRemoveUnit}
               onToggleState={props.handleToggleState}
               onUpdateVolume={props.handleUpdateVolume}
+              onUpdateUnit={props.handleUpdateUnit}  // Add this line
               onCellHover={props.lastHoverData}  // Pass the actual hover data
             />
             
@@ -364,6 +365,7 @@ function MainApp() {
   };
 
   const handleUpdateUnit = (id, updatedUnit) => {
+    console.log('handleUpdateUnit called:', { id, updatedUnit });
     setUnits(prevUnits =>
       prevUnits.map(unit => unit.id === id ? updatedUnit : unit)
     );
@@ -392,7 +394,7 @@ function MainApp() {
     handleRemoveUnit={handleRemoveUnit}
     handleToggleState={handleToggleState}
     handleUpdateVolume={handleUpdateVolume}
-    handleUpdateUnit={handleUpdateUnit}
+    handleUpdateUnit={handleUpdateUnit}  // Make sure this is included
     hasAudioInteraction={hasAudioInteraction}
     setHasAudioInteraction={setHasAudioInteraction}
     handleCellHover={handleCellHover}  // Pass the handler
