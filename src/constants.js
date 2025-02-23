@@ -46,6 +46,7 @@ export const DEFAULT_UNIT_CONFIGS = {
     muted: false,
     soloed: false,
     maxVoices: 4,
-    pitch: 0
+    pitch: 0,
+    syncEnabled: false  // Add this line to initialize syncEnabled
   }
 };

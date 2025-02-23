@@ -46,13 +46,14 @@ export class LoopingUnit extends BaseUnit {
   }
 
   getSharedClock() {
-    // If sync is enabled and we have a master loop, use its duration
     if (this.syncEnabled && this.masterLoopDuration) {
       const rate = 1 / this.masterLoopDuration;
-      return el.phasor(el.const({
-        key: `sync-rate-${this.id}`,
-        value: rate
-      }));
+      return el.phasor(
+        el.const({
+          key: `sync-rate-${this.id}`,
+          value: rate
+        })
+      );
     }
     return null;
   }
@@ -60,11 +61,18 @@ export class LoopingUnit extends BaseUnit {
   getTriggerSignal() {
     const clock = this.getSharedClock();
     if (this.syncEnabled && clock) {
-      // Create trigger pulse when phasor resets
-      return el.le(clock, 0.01);
+      // Create a gate signal that stays high for most of the cycle
+      // and transitions smoothly at loop points
+      return el.select(
+        el.le(
+          clock,
+          el.const({ key: `trigger-thresh-${this.id}`, value: 0.95 })
+        ),
+        el.const({ value: 1 }),
+        el.const({ value: 0 })
+      );
     }
-    // Default: constant trigger for free-running loops
-    return el.const({ value: 1 });
+    return el.const({ value: 1 }); // Default: constant trigger
   }
 
   async handleCellHover(cellData) {
@@ -136,16 +144,30 @@ export class LoopingUnit extends BaseUnit {
     } = params;
 
     const vfsKey = `sound-${genomeId}`;
+    const trigger = this.getTriggerSignal();
     
+    // Add an envelope to smooth transitions
+    const env = el.adsr(
+      0.01,    // Attack: quick fade in
+      0.05,    // Decay: short
+      1,       // Sustain: full volume
+      0.05,    // Release: quick fade out
+      trigger
+    );
+
+    // Combine sample playback with envelope
     return el.mul(
-      el.mc.sample({
-        channels: 1,
-        path: vfsKey,
-        mode: 'loop',
-        playbackRate,
-        key: `looping-${genomeId}-${this.id}`
-      },
-      this.getTriggerSignal())[0],
+      el.mul(
+        el.mc.sample({
+          channels: 1,
+          path: vfsKey,
+          mode: 'loop',
+          playbackRate,
+          key: `looping-${genomeId}-${this.id}`
+        },
+        trigger)[0],
+        env
+      ),
       el.const({ 
         key: `gain-${genomeId}-${this.id}`,
         value: 1 / this.maxVoices 
