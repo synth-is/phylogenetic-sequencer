@@ -577,6 +577,7 @@ export default function UnitsPanel({
                   style={{ display: 'none' }}
                 >
                   <div className="bg-gray-700/50 rounded-sm p-2 space-y-2">
+                    {/* 
                     <Slider 
                       label="Position"
                       min={0}
@@ -589,7 +590,7 @@ export default function UnitsPanel({
                       }}
                       centered={true}
                     />
-                    
+                    */}
                     <Slider 
                       label="Playback Rate"
                       min={0.25}
@@ -601,7 +602,7 @@ export default function UnitsPanel({
                         forceTrajectoryUpdate(unit.id);
                       }}
                     />
-                    
+                    {/* 
                     <Slider 
                       label="Start Offset"
                       min={0}
@@ -625,6 +626,7 @@ export default function UnitsPanel({
                         forceTrajectoryUpdate(unit.id);
                       }}
                     />
+                    */}
                   </div>
                 </div>
               </div>
