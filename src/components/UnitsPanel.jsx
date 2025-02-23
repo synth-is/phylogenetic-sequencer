@@ -191,21 +191,15 @@ export default function UnitsPanel({
         formattedData
       });
 
-      // Add a callback to update UI whenever voices change
-      const handleVoicesChanged = () => {
-        forceTrajectoryUpdate(selectedUnitId);
-      };
-
       if (unit.type === UNIT_TYPES.TRAJECTORY) {
-        // Add the callback before handling hover
-        unit.onVoicesChanged = handleVoicesChanged;
         unit.handleCellHover(formattedData);
-        // Remove callback after handling hover
-        unit.onVoicesChanged = null;
-      } else if (unit.type === UNIT_TYPES.SEQUENCING && onCellHover.config?.addToSequence) {
-        console.log('Toggling sequence item for unit:', selectedUnitId);
-        unit.toggleSequenceItem(formattedData);
-        forceSequenceUpdate(selectedUnitId);
+      } else if (unit.type === UNIT_TYPES.SEQUENCING) {
+        // Check if this is a click (addToSequence) or just a hover
+        if (onCellHover.config?.addToSequence) {
+          console.log('Adding to sequence:', formattedData);
+          unit.toggleSequenceItem(formattedData);
+          forceSequenceUpdate(selectedUnitId);
+        }
       } else if (unit.type === UNIT_TYPES.LOOPING) {
         unit.handleCellHover(formattedData);
       }
@@ -812,31 +806,6 @@ export default function UnitsPanel({
       });
     };
   }, [units]);
-
-  // Remove setTimeout from hover handler
-  useEffect(() => {
-    if (!selectedUnitId || !onCellHover) return;
-    
-    const formattedData = CellDataFormatter.formatCellData(
-      onCellHover.data,
-      onCellHover.experiment,
-      onCellHover.evoRunId,
-      onCellHover.config
-    );
-  
-    if (formattedData) {
-      const unit = unitsRef.current.get(selectedUnitId);
-      if (!unit) return;
-
-      if (unit.type === UNIT_TYPES.TRAJECTORY) {
-        unit.handleCellHover(formattedData);
-        // UI updates will happen through state change callback
-      } else if (unit.type === UNIT_TYPES.SEQUENCING && onCellHover.config?.addToSequence) {
-        unit.toggleSequenceItem(formattedData);
-        forceSequenceUpdate(selectedUnitId);
-      }
-    }
-  }, [selectedUnitId, onCellHover]);
 
   return (
     <div className="h-fit max-h-[calc(100vh-5rem)] bg-gray-900/95 backdrop-blur border-r border-gray-800 overflow-y-auto">

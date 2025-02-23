@@ -119,6 +119,11 @@ export class SequencingUnit extends BaseUnit {
           Math.max(...this.activeSequence.map(item => item.step || 0)) + 1 : 
           0;
 
+      // For first item, ensure no timestep is selected
+      if (this.activeSequence.length === 0) {
+        this.selectedTimestep = null;
+      }
+
       this.activeSequence.push({
         ...cellData,
         step: existingOffset,     // Use step for group position
