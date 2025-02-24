@@ -17,6 +17,7 @@ const PhylogeneticViewer = ({
   const [measureContextSwitches, setMeasureContextSwitches] = useState(false);
   const [tooltip, setTooltip] = useState({ show: false, content: '', x: 0, y: 0 });
   const [silentMode, setSilentMode] = useState(false); // Add silentMode state
+  const [menuOpen, setMenuOpen] = useState(false);
 
   // Keep only view-related refs
   const searchTermRef = useRef('');
@@ -402,21 +403,17 @@ const PhylogeneticViewer = ({
     URL.revokeObjectURL(url);
   }, []);
 
-  // Add key handler for Alt key
+  // Replace key handler with toggle behavior
   useEffect(() => {
     const handleKeyPress = (e) => {
-      if (e.key === 'Alt') {
-        setSilentMode(e.type === 'keydown');
+      if (e.key === 'Alt' && e.type === 'keydown') {
+        e.preventDefault(); // Prevent browser's default Alt behavior
+        setSilentMode(prev => !prev);
       }
     };
   
-    document.addEventListener('keydown', handleKeyPress);
-    document.addEventListener('keyup', handleKeyPress);
-  
-    return () => {
-      document.removeEventListener('keydown', handleKeyPress);
-      document.removeEventListener('keyup', handleKeyPress);
-    };
+    window.addEventListener('keydown', handleKeyPress);
+    return () => window.removeEventListener('keydown', handleKeyPress);
   }, []);
 
   // Simplify hover state management
@@ -448,6 +445,25 @@ const PhylogeneticViewer = ({
       className={`flex flex-col h-screen ${theme === 'light' ? 'bg-gray-100' : 'bg-gray-950'}`}
       onClick={handleClick}
     >
+      {/* Silent Mode Indicator - Move this OUTSIDE the relative container */}
+      <div className="fixed bottom-2 left-2 text-white/70 text-xs flex items-center gap-2 z-50">
+        <span>Hover: {silentMode ? 'navigation only' : 'play sound'} • Double-click: download</span>
+        <button
+          onClick={(e) => {
+            e.stopPropagation();  // Prevent click from bubbling
+            setSilentMode(prev => !prev);
+          }}
+          className={`px-2 py-1 rounded text-xs transition-colors ${
+            silentMode 
+              ? 'bg-blue-600 text-white' 
+              : 'bg-gray-800/80 text-gray-400 hover:text-white'
+          }`}
+        >
+          {silentMode ? 'Silent Mode On' : 'Silent Mode Off'}
+        </button>
+        <span className="text-gray-500">(Alt to toggle)</span>
+      </div>
+
       {/* Add download button next to settings */}
       <div className="absolute bottom-2 right-2 z-50 flex gap-2">
         <button
@@ -569,16 +585,6 @@ const PhylogeneticViewer = ({
             dangerouslySetInnerHTML={{ __html: tooltip.content }}
           />
         )}
-
-        {/* Update silent mode text */}
-        <div className="absolute bottom-2 left-2 text-white/70 text-xs flex items-center gap-2">
-          <span>Hover: {silentMode ? 'navigation only' : 'play sound'} • Double-click: download</span>
-          {silentMode && (
-            <span className="px-1.5 py-0.5 bg-gray-800/80 rounded text-xs">
-              Silent Mode
-            </span>
-          )}
-        </div>
 
         {!hasAudioInteraction && (
           <>
