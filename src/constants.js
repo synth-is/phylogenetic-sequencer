@@ -27,7 +27,7 @@ export const DEFAULT_UNIT_CONFIGS = {
     active: true,
     muted: false,
     soloed: false,
-    volume: -12,
+    volume: -10,
     bars: 1,        // Set default to 1 bar
     bpm: 120,
     startOffset: 0

@@ -151,9 +151,20 @@ export class SequencingUnit extends BaseUnit {
 
   // Update sequence item parameters
   updateSequenceItem(genomeId, updates) {
-    this.activeSequence = this.activeSequence.map(item => 
-      item.genomeId === genomeId ? { ...item, ...updates } : item
-    );
+    this.activeSequence = this.activeSequence.map(item => {
+      if (item.genomeId === genomeId) {
+        let newUpdates = { ...updates };
+
+        // Handle shift parameter directly
+        if (updates.shift !== undefined) {
+          newUpdates.pitchShift = updates.shift;
+        }
+
+        return { ...item, ...newUpdates };
+      }
+      return item;
+    });
+    
     this.updateSequencer();
   }
 
@@ -246,29 +257,28 @@ export class SequencingUnit extends BaseUnit {
         const duration = audioData.duration * item.durationScale;
 
         try {
-          // Create voice with proper gain normalization and unique keys
           const voice = el.mul(
             el.sampleseq2({
-              key: `player-${this.id}-${step}-${itemIndex}`, // Add unique key for player
+              key: `player-${this.id}-${step}-${itemIndex}`,
               path: vfsKey,
               duration: duration,
               seq: [
                 { time: startTime, value: 1 },
                 { time: startTime + duration, value: 0 }
               ],
-              shift: item.pitchShift,
+              shift: item.pitchShift || this.pitch, // Only use shift parameter
               stretch: item.stretch
             }, 
             el.mod(
               time, 
               el.const({ 
-                key: `duration-${this.id}-${step}-${itemIndex}`, // Add unique key for duration
+                key: `duration-${this.id}-${step}-${itemIndex}`,
                 value: sequenceDuration 
               })
             )
           ),
           el.const({ 
-            key: `gain-${this.id}-${step}-${itemIndex}`, // Add unique key for gain
+            key: `gain-${this.id}-${step}-${itemIndex}`,
             value: 1 / Math.max(1, totalVoices) 
           })
           );
@@ -326,17 +336,20 @@ export class SequencingUnit extends BaseUnit {
     }
     if (config.soloed !== undefined && config.soloed !== this.soloed) {
       this.soloed = config.soloed;
-      // Just update mixing without affecting element settings
       this.updateSequencer();
-      return; // Exit early to prevent pitch/other updates
+      return;
     }
 
-    // Only update sequence item pitches when explicitly changing unit pitch
+    // Handle pitch changes for all sequence items
     if (config.pitch !== undefined && config.pitch !== this.pitch) {
       this.pitch = config.pitch;
-      this.activeSequence.forEach(item => {
-        item.pitchShift = config.pitch;
-      });
+      
+      // Update all sequence items with new shift/pitch value
+      this.activeSequence = this.activeSequence.map(item => ({
+        ...item,
+        shift: this.pitch,      // Add this line
+        pitchShift: this.pitch  // Keep this for compatibility
+      }));
     }
 
     // Handle other config changes

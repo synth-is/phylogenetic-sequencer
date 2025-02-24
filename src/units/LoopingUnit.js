@@ -270,13 +270,13 @@ export class LoopingUnit extends BaseUnit {
       this.pitch = config.pitch;
       this.playbackRate = Math.pow(2, config.pitch / 12);
       
-      // Update all looping voices with new master pitch
+      // Update all looping voices with new playback rate only
       const playingGenomes = Array.from(this.loopingVoices.keys());
       playingGenomes.forEach(genomeId => {
         const voiceData = this.loopingVoices.get(genomeId);
         this.updateLoopingVoice(genomeId, {
           ...voiceData,
-          pitch: config.pitch // Update voice pitch to match master
+          playbackRate: this.playbackRate // Only update playbackRate, not pitch
         });
       });
     }
@@ -301,12 +301,11 @@ export class LoopingUnit extends BaseUnit {
 
     // Calculate playback rate based on updates
     let newPlaybackRate;
-    if (updates.pitch !== undefined) {
-      // Use provided pitch directly (from either master or individual control)
-      newPlaybackRate = Math.pow(2, updates.pitch / 12);
-    } else if (updates.playbackRate !== undefined) {
+    if (updates.playbackRate !== undefined) {
+      // Use provided playbackRate directly
       newPlaybackRate = updates.playbackRate;
     } else {
+      // Keep existing playbackRate or use unit's default
       newPlaybackRate = voiceData.playbackRate || this.playbackRate;
     }
 
@@ -330,13 +329,12 @@ export class LoopingUnit extends BaseUnit {
       })
     );
 
-    // Update voice data, ensuring pitch is always stored
+    // Update voice data, only updating the provided parameters
     this.loopingVoices.set(genomeId, {
       ...voiceData,
       ...updates,
       voice,
       playbackRate: newPlaybackRate,
-      pitch: updates.pitch ?? voiceData.pitch ?? this.pitch, // Maintain pitch value
       timestamp: Date.now()
     });
 

@@ -270,57 +270,62 @@ export default function UnitsPanel({
     return () => window.removeEventListener('keydown', handleKeyPress);
   }, [selectedUnitId, recordingStatus]);
 
-  const TrajectoryEventParams = ({ event, onUpdate }) => {
-    // Add state to track dragging values
-    const [dragValues, setDragValues] = useState({
-      offset: event.offset,
-      playbackRate: event.playbackRate || 1,
-      startOffset: event.startOffset || 0,
-      stopOffset: event.stopOffset || 0
-    });
+const ParameterSection = ({ title, children }) => (
+  <div className="mt-2">
+    <h3 className="text-xs text-gray-400 mb-1">{title}</h3>
+    <div className="space-y-2">
+      {children}
+    </div>
+  </div>
+);
 
-    // Handle update when dragging stops
-    const handleDragEnd = (param, value) => {
-      onUpdate({ [param]: value });
-    };
-
-    return (
-      <div className="pt-2 space-y-2">
-        <Slider 
-          label="Position"
-          min={0}
-          max={1}
-          step={0.01}
-          value={dragValues.offset}
-          onChange={val => {
-            setDragValues(prev => ({ ...prev, offset: val }));
-          }}
-          onMouseUp={() => handleDragEnd('offset', dragValues.offset)}
-          centered={true}
-        />
-        
-        <Slider 
-          label="Playback Rate"
-          min={0.25}
-          max={4}
-          step={0.25}
-          value={dragValues.playbackRate}
-          onChange={val => {
-            setDragValues(prev => ({ ...prev, playbackRate: val }));
-          }}
-          onMouseUp={() => handleDragEnd('playbackRate', dragValues.playbackRate)}
-        />
-        
+// Add new shared parameter components
+const ModifyParameters = ({ onChange, values, showPosition = true, unitType }) => (
+  <ParameterSection title="Modify">
+    {showPosition && (
+      <Slider 
+        label="Position"
+        min={0}
+        max={1}
+        step={0.01}
+        value={values.offset || 0.5}
+        onChange={val => onChange('offset', val)}
+        centered={true}
+      />
+    )}
+    
+    {unitType === UNIT_TYPES.SEQUENCING ? (
+      // For SequencingUnit, use shift parameter
+      <Slider 
+        label="Shift"
+        min={-24}
+        max={24}
+        step={1}
+        value={values.shift || values.pitchShift || 0}
+        onChange={val => onChange('shift', val)}
+        centered={true}
+      />
+    ) : (
+      // For TrajectoryUnit and LoopingUnit, use playbackRate parameter
+      <Slider 
+        label="Playback Rate"
+        min={0.25}
+        max={4}
+        step={0.25}
+        value={values.playbackRate || 1}
+        onChange={val => onChange('playbackRate', val)}
+      />
+    )}
+    
+    {showPosition && (
+      <>
         <Slider 
           label="Start Offset"
           min={0}
           max={1}
           step={0.01}
-          value={dragValues.startOffset}
-          onChange={val => {
-            setDragValues(prev => ({ ...prev, startOffset: val }));
-          }}
-          onMouseUp={() => handleDragEnd('startOffset', dragValues.startOffset)}
+          value={values.startOffset || 0}
+          onChange={val => onChange('startOffset', val)}
         />
         
         <Slider 
@@ -328,15 +333,86 @@ export default function UnitsPanel({
           min={0}
           max={1}
           step={0.01}
-          value={dragValues.stopOffset}
-          onChange={val => {
-            setDragValues(prev => ({ ...prev, stopOffset: val }));
-          }}
-          onMouseUp={() => handleDragEnd('stopOffset', dragValues.stopOffset)}
+          value={values.stopOffset || 0}
+          onChange={val => onChange('stopOffset', val)}
         />
-      </div>
-    );
+      </>
+    )}
+  </ParameterSection>
+);
+
+const RenderParameters = ({ onChange, values }) => (
+  <ParameterSection title="Render">
+    <Slider 
+      label="Duration"
+      min={0.1}
+      max={4}
+      step={0.1}
+      value={values.duration || 1}
+      onChange={val => onChange('duration', val)}
+    />
+    
+    <Slider 
+      label="Pitch"
+      min={-24}
+      max={24}
+      step={1}
+      value={values.pitch || 0}
+      onChange={() => {}} // Make this slider inactive
+      centered={true}
+    />
+    
+    <Slider 
+      label="Velocity"
+      min={0}
+      max={1}
+      step={0.01}
+      value={values.velocity || 1}
+      onChange={val => onChange('velocity', val)}
+    />
+  </ParameterSection>
+);
+
+// Update TrajectoryEventParams to use shared components
+const TrajectoryEventParams = ({ event, onUpdate }) => {
+  const [dragValues, setDragValues] = useState({
+    offset: event.offset,
+    playbackRate: event.playbackRate || 1,
+    startOffset: event.startOffset || 0,
+    stopOffset: event.stopOffset || 0,
+    duration: event.duration || 1,
+    pitch: event.pitch || 0,
+    velocity: event.velocity || 1
+  });
+
+  const handleParamChange = (param, value) => {
+    setDragValues(prev => ({ ...prev, [param]: value }));
   };
+
+  const handleDragEnd = (param, value) => {
+    onUpdate({ [param]: value });
+  };
+
+  return (
+    <div className="pt-2 space-y-2">
+      <ModifyParameters 
+        values={dragValues}
+        onChange={(param, value) => {
+          handleParamChange(param, value);
+          handleDragEnd(param, value);
+        }}
+        unitType={UNIT_TYPES.TRAJECTORY}
+      />
+      <RenderParameters 
+        values={dragValues}
+        onChange={(param, value) => {
+          handleParamChange(param, value);
+          handleDragEnd(param, value);
+        }}
+      />
+    </div>
+  );
+};
 
   const renderTrajectoryControls = (unit) => {
     if (unit.type !== UNIT_TYPES.TRAJECTORY) return null;
@@ -346,13 +422,11 @@ export default function UnitsPanel({
   
     const isRecording = recordingStatus[unit.id];
     const trajectories = trajectoryStates.get(unit.id) || [];
-
-    // Only show recording controls if not in looping mode
     const isLoopingMode = trajectoryUnit.playbackMode === 'looping';
-
+  
     return (
       <div className="mt-2 space-y-2">
-        {/* Recording controls - only show if not in looping mode */}
+        {/* Existing recording controls */}
         {!isLoopingMode && (
           <div className="flex gap-2">
             <button
@@ -378,6 +452,51 @@ export default function UnitsPanel({
           </div>
         )}
 
+        {/* Add Explore section */}
+        {!isRecording && trajectoryUnit.lastHoveredSound && (
+          <div className="space-y-1">
+            <div className="flex items-center gap-2 px-2 py-1 bg-gray-700/50 rounded-sm">
+              <span className="text-xs text-gray-300">
+                Explore Sound
+              </span>
+              <button
+                onClick={() => {
+                  const element = document.querySelector(`#explore-params-${unit.id}`);
+                  element.style.display = element.style.display === 'none' ? 'block' : 'none';
+                }}
+                className="p-1 text-xs bg-gray-600/50 hover:bg-gray-600 text-white rounded ml-auto"
+              >
+                ▼
+              </button>
+            </div>
+
+            <div 
+              id={`explore-params-${unit.id}`}
+              className="ml-4 mt-1 space-y-2"
+              style={{ display: 'none' }}
+            >
+              <div className="bg-gray-700/50 rounded-sm p-2 space-y-2">
+                <ModifyParameters 
+                  values={trajectoryUnit.lastHoveredSound}
+                  onChange={(param, value) => {
+                    trajectoryUnit.updateExploreParams({ [param]: value });
+                    forceTrajectoryUpdate(unit.id);
+                  }}
+                  showPosition={false}  // Don't show position slider for explore mode
+                  unitType={UNIT_TYPES.TRAJECTORY}
+                />
+                <RenderParameters 
+                  values={trajectoryUnit.lastHoveredSound}
+                  onChange={(param, value) => {
+                    trajectoryUnit.updateExploreParams({ [param]: value });
+                    forceTrajectoryUpdate(unit.id);
+                  }}
+                />
+              </div>
+            </div>
+          </div>
+        )}
+  
         {/* Existing trajectories list */}
         <div className="space-y-1">
           {trajectories.map(({ id: trajectoryId, isPlaying }) => (
@@ -465,177 +584,143 @@ export default function UnitsPanel({
     );
   };
 
-  const renderLoopingControls = (unit) => {
-    if (unit.type !== UNIT_TYPES.LOOPING) return null;
+const renderLoopingControls = (unit) => {
+  if (unit.type !== UNIT_TYPES.LOOPING) return null;
 
-    const loopingUnit = unitsRef.current.get(unit.id);
-    if (!loopingUnit) return null;
+  const loopingUnit = unitsRef.current.get(unit.id);
+  if (!loopingUnit) return null;
 
-    const masterLoopInfo = loopingUnit.getMasterLoopInfo();
-    const loopingVoices = Array.from(loopingUnit.loopingVoices.entries())
-      .map(([genomeId, data]) => ({
-        id: genomeId,
-        ...data
-      }));
+  const masterLoopInfo = loopingUnit.getMasterLoopInfo();
+  const loopingVoices = Array.from(loopingUnit.loopingVoices.entries())
+    .map(([genomeId, data]) => ({
+      id: genomeId,
+      ...data
+    }));
 
-    return (
-      <div className="space-y-2">
-        {/* Header with collapse control for entire list */}
-        <div className="flex items-center gap-2 px-2 py-1 bg-gray-700/50 rounded-sm">
-          <span className="text-xs text-gray-300">
-            Looping Voices ({loopingVoices.length})
-          </span>
-          <div className="flex-1" />
-          {loopingVoices.length > 0 && (
-            <button
-              onClick={() => {
-                loopingVoices.forEach(voice => {
-                  loopingUnit.stopLoopingVoice(voice.id);
-                });
-                forceTrajectoryUpdate(unit.id);
-              }}
-              className="px-1.5 py-0.5 text-xs rounded bg-red-600/50 text-white hover:bg-red-600"
-            >
-              Stop All
-            </button>
-          )}
+  return (
+    <div className="space-y-2">
+      {/* Header with collapse control for entire list */}
+      <div className="flex items-center gap-2 px-2 py-1 bg-gray-700/50 rounded-sm">
+        <span className="text-xs text-gray-300">
+          Looping Voices ({loopingVoices.length})
+        </span>
+        <div className="flex-1" />
+        {loopingVoices.length > 0 && (
           <button
             onClick={() => {
-              const element = document.querySelector(`#looping-voices-${unit.id}`);
-              element.style.display = element.style.display === 'none' ? 'block' : 'none';
+              loopingVoices.forEach(voice => {
+                loopingUnit.stopLoopingVoice(voice.id);
+              });
+              forceTrajectoryUpdate(unit.id);
             }}
-            className="p-1 text-xs bg-gray-600/50 hover:bg-gray-600 text-white rounded"
+            className="px-1.5 py-0.5 text-xs rounded bg-red-600/50 text-white hover:bg-red-600"
           >
-            ▼
+            Stop All
           </button>
+        )}
+        <button
+          onClick={() => {
+            const element = document.querySelector(`#looping-voices-${unit.id}`);
+            element.style.display = element.style.display === 'none' ? 'block' : 'none';
+          }}
+          className="p-1 text-xs bg-gray-600/50 hover:bg-gray-600 text-white rounded"
+        >
+          ▼
+        </button>
+      </div>
+
+      {/* Collapsible section containing everything */}
+      <div 
+        id={`looping-voices-${unit.id}`}
+        className="space-y-2"
+        style={{ display: 'none' }}
+      >
+        {/* Sync Controls */}
+        <div className="flex items-center gap-2 py-1">
+          <label className="flex items-center gap-2 text-xs">
+            <input
+              type="checkbox"
+              checked={unit.syncEnabled}
+              onChange={(e) => {
+                onUpdateUnit(unit.id, {
+                  ...unit,
+                  syncEnabled: e.target.checked
+                });
+              }}
+              className="rounded bg-gray-800 border-gray-700"
+            />
+            <span className="text-gray-300">Sync to First Loop</span>
+          </label>
         </div>
 
-        {/* Collapsible section containing everything */}
-        <div 
-          id={`looping-voices-${unit.id}`}
-          className="space-y-2"
-          style={{ display: 'none' }}
-        >
-          {/* Sync Controls */}
-          <div className="flex items-center gap-2 py-1">
-            <label className="flex items-center gap-2 text-xs">
-              <input
-                type="checkbox"
-                checked={unit.syncEnabled}
-                onChange={(e) => {
-                  onUpdateUnit(unit.id, {
-                    ...unit,
-                    syncEnabled: e.target.checked
-                  });
-                }}
-                className="rounded bg-gray-800 border-gray-700"
-              />
-              <span className="text-gray-300">Sync to First Loop</span>
-            </label>
+        {/* Master Loop Info */}
+        {masterLoopInfo && (
+          <div className="text-xs text-gray-500 bg-gray-800/30 px-2 py-1 rounded flex items-center justify-between">
+            <span>Master: {masterLoopInfo.id.slice(-6)}</span>
+            <span>{masterLoopInfo.duration.toFixed(2)}s</span>
           </div>
+        )}
 
-          {/* Master Loop Info */}
-          {masterLoopInfo && (
-            <div className="text-xs text-gray-500 bg-gray-800/30 px-2 py-1 rounded flex items-center justify-between">
-              <span>Master: {masterLoopInfo.id.slice(-6)}</span>
-              <span>{masterLoopInfo.duration.toFixed(2)}s</span>
-            </div>
-          )}
+        {/* Individual Voices List */}
+        <div className="ml-4 space-y-1">
+          {loopingVoices.map(voice => (
+            <div key={voice.id}>
+              <div className="flex items-center gap-2 px-2 py-1 bg-gray-700/50 rounded-sm">
+                <span className="text-xs text-gray-300">
+                  {voice.id.slice(-6)}
+                </span>
+                <button
+                  onClick={() => {
+                    loopingUnit.stopLoopingVoice(voice.id);
+                    forceTrajectoryUpdate(unit.id);
+                  }}
+                  className="px-1.5 py-0.5 text-xs rounded bg-red-600/50 text-white hover:bg-red-600"
+                >
+                  Stop
+                </button>
+                <button
+                  onClick={() => {
+                    const element = document.querySelector(`#looping-voice-${voice.id}`);
+                    element.style.display = element.style.display === 'none' ? 'block' : 'none';
+                  }}
+                  className="p-1 text-xs bg-gray-600/50 hover:bg-gray-600 text-white rounded ml-auto"
+                >
+                  ▼
+                </button>
+              </div>
 
-          {/* Individual Voices List */}
-          <div className="ml-4 space-y-1">
-            {loopingVoices.map(voice => (
-              <div key={voice.id}>
-                <div className="flex items-center gap-2 px-2 py-1 bg-gray-700/50 rounded-sm">
-                  <span className="text-xs text-gray-300">
-                    {voice.id.slice(-6)}
-                  </span>
-                  <button
-                    onClick={() => {
-                      loopingUnit.stopLoopingVoice(voice.id);
+              {/* Individual Voice Parameters */}
+              <div 
+                id={`looping-voice-${voice.id}`}
+                className="ml-4 mt-1 space-y-2"
+                style={{ display: 'none' }}
+              >
+                <div className="bg-gray-700/50 rounded-sm p-2 space-y-2">
+                  <ModifyParameters 
+                    values={voice}
+                    onChange={(param, value) => {
+                      loopingUnit.updateLoopingVoice(voice.id, { [param]: value });
                       forceTrajectoryUpdate(unit.id);
                     }}
-                    className="px-1.5 py-0.5 text-xs rounded bg-red-600/50 text-white hover:bg-red-600"
-                  >
-                    Stop
-                  </button>
-                  <button
-                    onClick={() => {
-                      const element = document.querySelector(`#looping-voice-${voice.id}`);
-                      element.style.display = element.style.display === 'none' ? 'block' : 'none';
+                    showPosition={false}
+                    unitType={UNIT_TYPES.LOOPING}
+                  />
+                  <RenderParameters 
+                    values={voice}
+                    onChange={(param, value) => {
+                      loopingUnit.updateLoopingVoice(voice.id, { [param]: value });
+                      forceTrajectoryUpdate(unit.id);
                     }}
-                    className="p-1 text-xs bg-gray-600/50 hover:bg-gray-600 text-white rounded ml-auto"
-                  >
-                    ▼
-                  </button>
-                </div>
-
-                {/* Individual Voice Parameters */}
-                <div 
-                  id={`looping-voice-${voice.id}`}
-                  className="ml-4 mt-1 space-y-2"
-                  style={{ display: 'none' }}
-                >
-                  <div className="bg-gray-700/50 rounded-sm p-2 space-y-2">
-                    {/* 
-                    <Slider 
-                      label="Position"
-                      min={0}
-                      max={1}
-                      step={0.01}
-                      value={voice.offset || 0.5}
-                      onChange={val => {
-                        loopingUnit.updateLoopingVoice(voice.id, { offset: val });
-                        forceTrajectoryUpdate(unit.id);
-                      }}
-                      centered={true}
-                    />
-                    */}
-                    <Slider 
-                      label="Playback Rate"
-                      min={0.25}
-                      max={4}
-                      step={0.25}
-                      value={voice.playbackRate || 1}
-                      onChange={val => {
-                        loopingUnit.updateLoopingVoice(voice.id, { playbackRate: val });
-                        forceTrajectoryUpdate(unit.id);
-                      }}
-                    />
-                    {/* 
-                    <Slider 
-                      label="Start Offset"
-                      min={0}
-                      max={1}
-                      step={0.01}
-                      value={voice.startOffset || 0}
-                      onChange={val => {
-                        loopingUnit.updateLoopingVoice(voice.id, { startOffset: val });
-                        forceTrajectoryUpdate(unit.id);
-                      }}
-                    />
-                    
-                    <Slider 
-                      label="Stop Offset"
-                      min={0}
-                      max={1}
-                      step={0.01}
-                      value={voice.stopOffset || 0}
-                      onChange={val => {
-                        loopingUnit.updateLoopingVoice(voice.id, { stopOffset: val });
-                        forceTrajectoryUpdate(unit.id);
-                      }}
-                    />
-                    */}
-                  </div>
+                  />
                 </div>
               </div>
-            ))}
-          </div>
+            </div>
+          ))}
         </div>
       </div>
-    );
-  };
+    </div>
+  );
+};
 
   // Add state for sequence updates
   const [sequenceStates, setSequenceStates] = useState(new Map());
@@ -721,52 +806,20 @@ export default function UnitsPanel({
                     Parameters
                   </summary>
                   <div className="pt-2 space-y-2">
-                    <Slider 
-                      label="Offset"
-                      min={0}
-                      max={1}
-                      step={0.01}
-                      value={item.offset}
-                      onChange={val => {
-                        sequencingUnit.updateSequenceItem(item.genomeId, { offset: val });
-                        forceSequenceUpdate(unit.id); // Add this line
+                    <ModifyParameters 
+                      values={item}
+                      onChange={(param, value) => {
+                        sequencingUnit.updateSequenceItem(item.genomeId, { [param]: value });
+                        forceSequenceUpdate(unit.id);
                       }}
-                      centered={true}  // Add this prop
+                      showPosition={false}
+                      unitType={UNIT_TYPES.SEQUENCING}
                     />
-                    
-                    <Slider 
-                      label="Duration"
-                      min={0.1}
-                      max={4}
-                      step={0.1}
-                      value={item.durationScale}
-                      onChange={val => {
-                        sequencingUnit.updateSequenceItem(item.genomeId, { durationScale: val });
-                        forceSequenceUpdate(unit.id); // Add this line
-                      }}
-                    />
-                    
-                    <Slider 
-                      label="Pitch"
-                      min={-12}
-                      max={12}
-                      step={1}
-                      value={item.pitchShift}
-                      onChange={val => {
-                        sequencingUnit.updateSequenceItem(item.genomeId, { pitchShift: val });
-                        forceSequenceUpdate(unit.id); // Add this line
-                      }}
-                    />
-                    
-                    <Slider 
-                      label="Stretch"
-                      min={0.25}
-                      max={4}
-                      step={0.25}
-                      value={item.stretch}
-                      onChange={val => {
-                        sequencingUnit.updateSequenceItem(item.genomeId, { stretch: val });
-                        forceSequenceUpdate(unit.id); // Add this line
+                    <RenderParameters 
+                      values={item}
+                      onChange={(param, value) => {
+                        sequencingUnit.updateSequenceItem(item.genomeId, { [param]: value });
+                        forceSequenceUpdate(unit.id);
                       }}
                     />
                   </div>

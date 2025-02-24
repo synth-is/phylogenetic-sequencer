@@ -29,6 +29,7 @@ export class TrajectoryUnit extends BaseUnit {
     this.highlightTimeouts = new Map();
     this.stateChangeCallbacks = new Set();
     this.activeGenomes = new Map(); // Add this line to initialize activeGenomes
+    this.lastHoveredSound = null;  // Add this to store last hovered sound data
   }
 
   addStateChangeCallback(callback) {
@@ -169,6 +170,14 @@ export class TrajectoryUnit extends BaseUnit {
 
       this.voiceTimeouts.set(voiceId, timeoutId);
 
+      // Store the last hovered sound data
+      this.lastHoveredSound = {
+        ...cellData,
+        playbackRate: this.playbackRate,
+        startOffset: 0,
+        stopOffset: 0
+      };
+
     } catch (error) {
       console.error('TrajectoryUnit playback error:', error);
       cellData.config?.onEnded?.();
@@ -185,14 +194,30 @@ export class TrajectoryUnit extends BaseUnit {
       return;
     }
 
+    // Collect and count all active voices
     const oneOffVoices = Array.from(this.oneOffVoices.values());
     const trajectorySignals = Array.from(this.activeTrajectorySignals.values());
+    const totalVoices = oneOffVoices.length + trajectorySignals.length;
     
-    const voices = [...oneOffVoices, ...trajectorySignals];
+    // Use square root scaling for smoother gain changes
+    // This provides less aggressive gain reduction while still preventing distortion
+    const voiceGain = 1 / Math.sqrt(Math.max(1, totalVoices));
     
-    const mix = voices.length === 0 ? el.const({value: 0}) :
-               voices.length === 1 ? voices[0] :
-               el.add(...voices);
+    // Apply gain to each voice type
+    const scaledOneOffVoices = oneOffVoices.map(voice => 
+      el.mul(voice, el.const({ value: voiceGain }))
+    );
+    
+    const scaledTrajectorySignals = trajectorySignals.map(voice => 
+      el.mul(voice, el.const({ value: voiceGain }))
+    );
+    
+    // Combine all voices efficiently
+    const allVoices = [...scaledOneOffVoices, ...scaledTrajectorySignals];
+    
+    const mix = allVoices.length === 0 ? el.const({value: 0}) :
+               allVoices.length === 1 ? allVoices[0] :
+               el.add(...allVoices);
 
     this.updateAudioNodes(mix ? [mix] : []);
     this.notifyStateChange();
@@ -367,55 +392,18 @@ export class TrajectoryUnit extends BaseUnit {
     const audioData = this.audioDataCache.get(vfsKey);
     const bufferLength = audioData ? audioData.length : 0;
 
+    // Use current explore settings for new recorded events
     const trajectory = this.trajectories.get(this.currentRecordingId);
     trajectory.events.push({
       time: currentTime,
       cellData,
-      offset: 0.5,          // Position in sequence
-      playbackRate: 1,      // Speed/pitch
-      startOffset: 0,       // Start offset as proportion (0-1)
-      stopOffset: 0,        // Stop offset as proportion (0-1)
-      bufferLength         // Store buffer length for reference
+      offset: 0.5,
+      // Use current explore settings or defaults
+      playbackRate: this.lastHoveredSound?.playbackRate || 1,
+      startOffset: this.lastHoveredSound?.startOffset || 0,
+      stopOffset: this.lastHoveredSound?.stopOffset || 0,
+      bufferLength
     });
-  }
-
-  // Add method to update trajectory event parameters
-  updateTrajectoryEvent(trajectoryId, eventIndex, updates) {
-    console.log('updateTrajectoryEvent called:', {
-      trajectoryId,
-      eventIndex,
-      updates,
-      currentTrajectory: this.trajectories.get(trajectoryId)
-    });
-
-    const trajectory = this.trajectories.get(trajectoryId);
-    if (!trajectory) {
-      console.error('No trajectory found with ID:', trajectoryId);
-      return;
-    }
-
-    const wasPlaying = trajectory.isPlaying;
-    
-    if (wasPlaying) {
-      console.log('Stopping playback to update parameters');
-      this.stopTrajectoryPlayback(trajectoryId);
-    }
-
-    // Update the event parameters
-    trajectory.events = trajectory.events.map((event, index) => {
-      if (index === eventIndex) {
-        const updatedEvent = { ...event, ...updates };
-        console.log('Updated event:', updatedEvent);
-        return updatedEvent;
-      }
-      return event;
-    });
-
-    // Restart playback if it was playing before
-    if (wasPlaying) {
-      console.log('Restarting playback with updated parameters');
-      this.playTrajectory(trajectoryId);
-    }
   }
 
   stopTrajectoryRecording() {
@@ -600,6 +588,63 @@ export class TrajectoryUnit extends BaseUnit {
       trajectory.isPlaying = false;
       this.activeTrajectorySignals.delete(trajectoryId);
       this.updateVoiceMix();
+    }
+  }
+
+  // Add method to update explore parameters
+  updateExploreParams(updates) {
+    if (!this.lastHoveredSound) return;
+    
+    Object.assign(this.lastHoveredSound, updates);
+    
+    // Update audio engine parameters for next hover playback and recording
+    if (updates.playbackRate !== undefined) {
+      this.playbackRate = updates.playbackRate;
+    }
+    if (updates.startOffset !== undefined) {
+      this.startOffset = updates.startOffset;
+    }
+    if (updates.stopOffset !== undefined) {
+      this.stopOffset = updates.stopOffset;
+    }
+  }
+
+  // Add method to update trajectory event parameters
+  updateTrajectoryEvent(trajectoryId, eventIndex, updates) {
+    console.log('updateTrajectoryEvent called:', {
+      trajectoryId,
+      eventIndex,
+      updates,
+      currentTrajectory: this.trajectories.get(trajectoryId)
+    });
+
+    const trajectory = this.trajectories.get(trajectoryId);
+    if (!trajectory) {
+      console.error('No trajectory found with ID:', trajectoryId);
+      return;
+    }
+
+    const wasPlaying = trajectory.isPlaying;
+    
+    if (wasPlaying) {
+      console.log('Stopping playback to update parameters');
+      this.stopTrajectoryPlayback(trajectoryId);
+    }
+
+    // Update the event parameters
+    trajectory.events = trajectory.events.map((event, index) => {
+      if (index === eventIndex) {
+        const updatedEvent = { ...event, ...updates };
+        console.log('Updated event:', updatedEvent);
+        return updatedEvent;
+      }
+      return event;
+    });
+
+    // Restart playback if it was playing before
+    if (wasPlaying) {
+      console.log('Restarting playback with updated parameters');
+      this.playTrajectory(trajectoryId);
     }
   }
 }
