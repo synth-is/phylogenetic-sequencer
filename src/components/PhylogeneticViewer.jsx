@@ -862,37 +862,6 @@ const PhylogeneticViewer = ({
     URL.revokeObjectURL(url);
   }, []);
 
-  // Add debug function to reset position and zoom
-  const resetView = useCallback(() => {
-    if (!canvasRef.current) return;
-    
-    const width = canvasRef.current.width;
-    const height = canvasRef.current.height;
-    
-    // Calculate offsets based on container dimensions
-    const xOffset = width * POSITION_CONFIG.INITIAL_X_OFFSET_PROP;
-    const yOffset = height * POSITION_CONFIG.INITIAL_Y_OFFSET_PROP;
-    
-    const newTransform = d3.zoomIdentity
-      .translate(
-        width / 2 + xOffset,
-        height / 2 + yOffset
-      )
-      .scale(POSITION_CONFIG.INITIAL_SCALE);
-    
-    currentZoomRef.current = newTransform;
-    persistentZoomState.transform = newTransform;
-    
-    debugLog("View reset", { 
-      width, height, 
-      xOffset,
-      yOffset,
-      newTransform: { x: newTransform.x, y: newTransform.y, k: newTransform.k } 
-    });
-    
-    renderCanvas();
-  }, [renderCanvas, debugLog]);
-
   // Main click handler
   const handleClick = async (e) => {
     e.stopPropagation();
@@ -901,19 +870,6 @@ const PhylogeneticViewer = ({
     }
     // Don't reset zoom on clicks
   };
-
-  // Add key handler for debugging (R to reset view)
-  useEffect(() => {
-    const handleKeyDown = (e) => {
-      if (e.key === 'r' || e.key === 'R') {
-        debugLog("Reset key pressed", {});
-        resetView();
-      }
-    };
-    
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [resetView, debugLog]);
 
   // Add a wheel event optimization to prevent "zoom exhaustion"
   useEffect(() => {
@@ -1005,19 +961,6 @@ const PhylogeneticViewer = ({
       className={`flex flex-col h-screen ${theme === 'light' ? 'bg-gray-100' : 'bg-gray-950'}`}
       onClick={handleClick}
     >
-      {/* Add reset view button */}
-      <div className="fixed top-2 left-2 z-50">
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            resetView();
-          }}
-          className="p-2 rounded-sm bg-gray-800/80 hover:bg-gray-700/80 text-gray-400 hover:text-white text-xs"
-        >
-          Reset View (R)
-        </button>
-      </div>
-
       {/* Silent Mode Indicator */}
       <div className="fixed bottom-2 left-2 text-white/70 text-xs flex items-center gap-2 z-50">
         <span>Hover: {silentMode ? 'navigation only' : 'play sound'} • Double-click: download</span>
@@ -1046,6 +989,7 @@ const PhylogeneticViewer = ({
         >
           <Download size={20} />
         </button>
+        {/*
         <button
           onClick={(e) => {
             e.stopPropagation();
@@ -1056,6 +1000,7 @@ const PhylogeneticViewer = ({
         >
           <Settings size={20} />
         </button>
+        */}
       </div>
 
       {/* Settings Panel */}
