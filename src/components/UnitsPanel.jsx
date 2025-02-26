@@ -457,7 +457,7 @@ const TrajectoryEventParams = ({ event, onUpdate }) => {
           <div className="space-y-1">
             <div className="flex items-center gap-2 px-2 py-1 bg-gray-700/50 rounded-sm">
               <span className="text-xs text-gray-300">
-                Explore Sound
+                Explore
               </span>
               <button
                 onClick={() => {
@@ -812,7 +812,7 @@ const renderLoopingControls = (unit) => {
                         sequencingUnit.updateSequenceItem(item.genomeId, { [param]: value });
                         forceSequenceUpdate(unit.id);
                       }}
-                      showPosition={false}
+                      showPosition={true}  // Change this to true to show Position slider
                       unitType={UNIT_TYPES.SEQUENCING}
                     />
                     <RenderParameters 

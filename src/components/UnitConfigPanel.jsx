@@ -281,21 +281,7 @@ export default function UnitConfigPanel({ unit, units, onClose, onUpdateUnit }) 
 
           {activeTab === 'Sampler' && (
             <>
-              <CollapsibleSection title="Sample">
-                <Slider 
-                  label="Pitch" 
-                  value={unit.pitch || 0} 
-                  onChange={val => handleValueChange('pitch', val)} 
-                  min={-12} 
-                  max={12} 
-                  centered={true}
-                />
-                <Slider 
-                  label="Start" 
-                  value={unit.start || 0} 
-                  onChange={val => handleValueChange('start', val)} 
-                />
-              </CollapsibleSection>
+              {/* Remove Sample section */}
 
               <CollapsibleSection title="Envelope">
                 <Slider 

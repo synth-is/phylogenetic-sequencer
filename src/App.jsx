@@ -11,6 +11,7 @@ import {
   RouterProvider
 } from 'react-router-dom';
 import PhylogeneticViewer from './components/PhylogeneticViewer';
+import PhylogeneticViewerSVG from './components/PhylogeneticViewerSVG';
 import UnitsPanel from './components/UnitsPanel';
 import UnitConfigPanel from './components/UnitConfigPanel';
 import ViewSwitcher from './components/ViewSwitcher';
@@ -102,6 +103,17 @@ function MainContent({
         <div className="absolute inset-0">
           {props.currentView === 'tree' ? (
             <PhylogeneticViewer 
+              treeData={treeData}
+              experiment={props.selectedRun}
+              evoRunId={getEvoRunIdFromSelectedStep(lineageTreesIndex[props.selectedRun].all[props.selectedIndex])}
+              showSettings={props.showSettings}
+              setShowSettings={props.setShowSettings}
+              hasAudioInteraction={props.hasAudioInteraction}
+              onAudioInteraction={() => props.setHasAudioInteraction(true)}
+              onCellHover={handleCellHover}  // Pass the handler directly
+            />
+          ) : props.currentView === 'treeSVG' ? (
+            <PhylogeneticViewerSVG 
               treeData={treeData}
               experiment={props.selectedRun}
               evoRunId={getEvoRunIdFromSelectedStep(lineageTreesIndex[props.selectedRun].all[props.selectedIndex])}
