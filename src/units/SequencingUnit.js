@@ -240,6 +240,9 @@ export class SequencingUnit extends BaseUnit {
     const totalVoices = Array.from(groupedItems.values())
       .reduce((sum, items) => sum + items.length, 0);
     
+    // Use square root scaling like other units
+    const voiceGain = 1 / Math.sqrt(Math.max(1, totalVoices));
+
     // Create voices for each group
     const voices = [];
     steps.forEach((step, stepIndex) => {
@@ -279,7 +282,7 @@ export class SequencingUnit extends BaseUnit {
           ),
           el.const({ 
             key: `gain-${this.id}-${step}-${itemIndex}`,
-            value: 1 / Math.max(1, totalVoices) 
+            value: voiceGain  // Use the square root scaled gain
           })
           );
           voices.push(voice);

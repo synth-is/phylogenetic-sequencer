@@ -253,8 +253,11 @@ const PhylogeneticViewer = ({
     const now = Date.now();
     const lastHover = hoverTimestampsRef.current.get(nodeData.id) || 0;
     
-    // Debounce rapid hover events
-    if (now - lastHover < HOVER_DEBOUNCE) {
+    // We still need debouncing for rapid sequences over different nodes
+    // But make it shorter to be more responsive for intentional "strumming"
+    const minTimeBetweenHovers = 30; // ms, reduced from 50ms
+    
+    if (now - lastHover < minTimeBetweenHovers) {
       console.log('Debouncing rapid hover:', nodeData.id);
       return;
     }
@@ -396,6 +399,8 @@ const PhylogeneticViewer = ({
         const [mouseX, mouseY] = d3.pointer(event);
         const node = findNode(mouseX, mouseY);
         
+        // Handle node hover transitions to avoid jitter
+        // Only trigger events when entering a new node or leaving a node completely
         if (node) {
           setTooltip({
             show: true,
@@ -408,11 +413,17 @@ const PhylogeneticViewer = ({
             y: mouseY
           });
           
-          if (!silentMode) {
+          // Only trigger audio/highlight if this is a different node than last time
+          if (!silentMode && currentHoveredNodeRef.current !== node.id) {
+            currentHoveredNodeRef.current = node.id;
             handleNodeMouseOver(node);
           }
         } else {
           setTooltip({ show: false, content: '', x: 0, y: 0 });
+          
+          // Clear current hovered node when not hovering any node
+          // This ensures we can hover the same node again after leaving it
+          currentHoveredNodeRef.current = null;
         }
       });
 
@@ -985,6 +996,9 @@ const PhylogeneticViewer = ({
       renderCanvas();
     }
   }, [zoomSettings, renderCanvas]);
+
+  // Add a ref to track the currently hovered node
+  const currentHoveredNodeRef = useRef(null);
 
   return (
     <div 
