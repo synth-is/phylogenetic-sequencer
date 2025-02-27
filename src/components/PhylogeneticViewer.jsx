@@ -330,6 +330,10 @@ const PhylogeneticViewer = ({
         y: coords.y,
         s: d.data.s,
         depth: d.depth,
+        gN: d.data.gN,  // Extract the gN attribute for generation
+        generation: d.data.generation,
+        class: d.data.class,  // Extract class info
+        name: d.data.name,    // Extract name as fallback
         duration: d.data.duration,
         noteDelta: d.data.noteDelta,
         velocity: d.data.velocity,
@@ -402,12 +406,22 @@ const PhylogeneticViewer = ({
         // Handle node hover transitions to avoid jitter
         // Only trigger events when entering a new node or leaving a node completely
         if (node) {
+          console.log('Hovering over node:', node);
+          // Enhanced tooltip content with gN for generation and class/name information
           setTooltip({
             show: true,
             content: `
               <div class="font-medium">${node.id || 'Node'}</div>
-              ${node.s !== undefined ? `<div>S: ${node.s.toFixed(3)}</div>` : ''}
-              ${node.year ? `<div>Year: ${node.year}</div>` : ''}
+              ${node.s !== undefined ? `<div>Score: ${(node.s * 100).toFixed(1)}%</div>` : ''}
+              ${node.gN !== undefined ? 
+                `<div>Generation: ${node.gN}</div>` : 
+                node.generation !== undefined ? 
+                  `<div>Generation: ${node.generation}</div>` : 
+                  node.depth !== undefined ? `<div>Generation: ${node.depth}</div>` : ''}
+              ${node.class ? 
+                `<div>Class: ${node.class}</div>` : 
+                node.name ? `<div>Name: ${node.name}</div>` : ''}
+              ${node.duration !== undefined ? `<div>Duration: ${node.duration.toFixed(2)}</div>` : ''}
             `,
             x: mouseX,
             y: mouseY
@@ -554,12 +568,30 @@ const PhylogeneticViewer = ({
         y: (d.parent.y * Math.sin(d.parent.x)) + POSITION_CONFIG.CENTER_ADJUST_Y
       } : null;
       
+      // Log to inspect if generation data exists in the original dataset
+      if (d.depth < 2) {
+        console.log("Node data sample:", {
+          id: d.data.id,
+          s: d.data.s,
+          depth: d.depth,
+          gN: d.data.gN,
+          generation: d.data.generation,
+          class: d.data.class,
+          name: d.data.name,
+          nodeData: d.data
+        });
+      }
+      
       return {
         id: d.data.id,
         x: coords.x,
         y: coords.y,
         s: d.data.s,
         depth: d.depth,
+        gN: d.data.gN,  // Extract the gN attribute for generation
+        generation: d.data.generation,
+        class: d.data.class,  // Extract class info
+        name: d.data.name,    // Extract name as fallback
         duration: d.data.duration,
         noteDelta: d.data.noteDelta,
         velocity: d.data.velocity,
