@@ -1,4 +1,4 @@
-import { Volume2, Plus } from 'lucide-react';
+import { Volume2, Plus, Loader2 } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { UNIT_TYPES } from '../constants';
 import { TrajectoryUnit } from '../units/TrajectoryUnit';
@@ -50,6 +50,13 @@ const UnitTypeSelector = ({ onSelect, onClose }) => (
         {type}
       </button>
     ))}
+  </div>
+);
+
+// Add a new RenderingSpinner component for visual feedback during rendering
+const RenderingSpinner = () => (
+  <div className="absolute inset-0 flex items-center justify-center bg-gray-900/50 rounded z-10">
+    <Loader2 size={20} className="text-blue-500 animate-spin" />
   </div>
 );
 
@@ -341,40 +348,46 @@ const ModifyParameters = ({ onChange, values, showPosition = true, unitType }) =
   </ParameterSection>
 );
 
-const RenderParameters = ({ onChange, values }) => (
+// Update the RenderParameters component to ensure pitch default is exactly 0
+const RenderParameters = ({ onChange, values, isRendering = false }) => (
   <ParameterSection title="Render">
-    <Slider 
-      label="Duration"
-      min={0.1}
-      max={4}
-      step={0.1}
-      value={values.duration || 1}
-      onChange={val => onChange('duration', val)}
-    />
-    
-    <Slider 
-      label="Pitch"
-      min={-24}
-      max={24}
-      step={1}
-      value={values.pitch || 0}
-      onChange={() => {}} // Make this slider inactive
-      centered={true}
-    />
-    
-    <Slider 
-      label="Velocity"
-      min={0}
-      max={1}
-      step={0.01}
-      value={values.velocity || 1}
-      onChange={val => onChange('velocity', val)}
-    />
+    <div className="relative">
+      {isRendering && <RenderingSpinner />}
+      <Slider 
+        label="Duration"
+        min={0.1}
+        max={4}
+        step={0.1}
+        value={values.duration || 1}
+        onChange={val => onChange('duration', val)}
+      />
+      
+      <Slider 
+        label="Pitch"
+        min={-24}
+        max={24}
+        step={1}
+        // Fix the default value handling to ensure it properly defaults to 0
+        // Note the strict comparison to ensure undefined values become 0
+        value={values.pitch === undefined ? 0 : values.pitch}
+        onChange={val => onChange('pitch', val)}
+        centered={true}
+      />
+      
+      <Slider 
+        label="Velocity"
+        min={0}
+        max={1}
+        step={0.01}
+        value={values.velocity || 1}
+        onChange={val => onChange('velocity', val)}
+      />
+    </div>
   </ParameterSection>
 );
 
-// Update TrajectoryEventParams to use shared components
-const TrajectoryEventParams = ({ event, onUpdate }) => {
+// Update TrajectoryEventParams to support rendering status
+const TrajectoryEventParams = ({ event, onUpdate, isRendering = false }) => {
   const [dragValues, setDragValues] = useState({
     offset: event.offset,
     playbackRate: event.playbackRate || 1,
@@ -409,6 +422,7 @@ const TrajectoryEventParams = ({ event, onUpdate }) => {
           handleParamChange(param, value);
           handleDragEnd(param, value);
         }}
+        isRendering={isRendering}
       />
     </div>
   );
@@ -475,7 +489,7 @@ const TrajectoryEventParams = ({ event, onUpdate }) => {
               className="ml-4 mt-1 space-y-2"
               style={{ display: 'none' }}
             >
-              <div className="bg-gray-700/50 rounded-sm p-2 space-y-2">
+              <div className="bg-gray-700/50 rounded-sm p-2 space-y-2 relative">
                 <ModifyParameters 
                   values={trajectoryUnit.lastHoveredSound}
                   onChange={(param, value) => {
@@ -491,6 +505,7 @@ const TrajectoryEventParams = ({ event, onUpdate }) => {
                     trajectoryUnit.updateExploreParams({ [param]: value });
                     forceTrajectoryUpdate(unit.id);
                   }}
+                  isRendering={isVoiceRendering(unit.id, trajectoryUnit.lastHoveredSound.genomeId)}
                 />
               </div>
             </div>
@@ -538,7 +553,6 @@ const TrajectoryEventParams = ({ event, onUpdate }) => {
                   }}
                   className="p-1 text-xs bg-gray-600/50 hover:bg-gray-600 text-white rounded"
                 >
-                  {/* You can use a chevron icon here */}
                   ▼
                 </button>
               </div>
@@ -554,7 +568,7 @@ const TrajectoryEventParams = ({ event, onUpdate }) => {
                   ?.map((event, index) => (
                     <div 
                       key={index}
-                      className="bg-gray-700/50 rounded-sm p-2 space-y-2"
+                      className="bg-gray-700/50 rounded-sm p-2 space-y-2 relative"
                     >
                       <div className="flex items-center justify-between">
                         <span className="text-xs text-gray-300">
@@ -572,6 +586,7 @@ const TrajectoryEventParams = ({ event, onUpdate }) => {
                             trajectoryUnit.updateTrajectoryEvent(trajectoryId, index, updates);
                             forceTrajectoryUpdate(unit.id);
                           }}
+                          isRendering={isVoiceRendering(unit.id, event.cellData.genomeId)}
                         />
                       </details>
                     </div>
@@ -695,7 +710,7 @@ const renderLoopingControls = (unit) => {
                 className="ml-4 mt-1 space-y-2"
                 style={{ display: 'none' }}
               >
-                <div className="bg-gray-700/50 rounded-sm p-2 space-y-2">
+                <div className="bg-gray-700/50 rounded-sm p-2 space-y-2 relative">
                   <ModifyParameters 
                     values={voice}
                     onChange={(param, value) => {
@@ -711,6 +726,7 @@ const renderLoopingControls = (unit) => {
                       loopingUnit.updateLoopingVoice(voice.id, { [param]: value });
                       forceTrajectoryUpdate(unit.id);
                     }}
+                    isRendering={isVoiceRendering(unit.id, voice.id)}
                   />
                 </div>
               </div>
@@ -821,6 +837,7 @@ const renderLoopingControls = (unit) => {
                         sequencingUnit.updateSequenceItem(item.genomeId, { [param]: value });
                         forceSequenceUpdate(unit.id);
                       }}
+                      isRendering={isVoiceRendering(unit.id, item.genomeId)}
                     />
                   </div>
                 </details>
@@ -939,6 +956,71 @@ const renderLoopingControls = (unit) => {
       });
     };
   }, [units]);
+
+  // Add state to track rendering status for voices
+  const [renderingStates, setRenderingStates] = useState(new Map());
+  
+  // Add useEffect to setup render state listeners
+  useEffect(() => {
+    const handleRenderStateChange = (unitId) => () => {
+      const unit = unitsRef.current.get(unitId);
+      
+      // Check for renderingVoices (TrajectoryUnit, LoopingUnit) or renderingItems (SequencingUnit)
+      let renderingIds = [];
+      if (unit?.renderingVoices) {
+        renderingIds = Array.from(unit.renderingVoices.keys());
+      } else if (unit?.renderingItems) {
+        renderingIds = Array.from(unit.renderingItems.keys());
+      }
+      
+      console.log(`Render state updated for unit ${unitId}:`, { 
+        renderingIds,
+        unitType: unit?.type
+      });
+      
+      // Update render state
+      setRenderingStates(prev => {
+        const newState = new Map(prev);
+        newState.set(unitId, new Set(renderingIds));
+        return newState;
+      });
+    };
+
+    const renderListeners = new Map();
+
+    // Set up render state listeners for all unit types
+    units.forEach(unit => {
+      const unitInstance = unitsRef.current.get(unit.id);
+      if (!unitInstance) return;
+      
+      // Check which render callback method is available
+      if (typeof unitInstance.addRenderStateCallback === 'function') {
+        const listener = handleRenderStateChange(unit.id);
+        unitInstance.addRenderStateCallback(listener);
+        renderListeners.set(unit.id, listener);
+      } 
+    });
+
+    return () => {
+      // Clean up all render listeners
+      renderListeners.forEach((listener, unitId) => {
+        const unitInstance = unitsRef.current.get(unitId);
+        if (unitInstance && typeof unitInstance.removeRenderStateCallback === 'function') {
+          unitInstance.removeRenderStateCallback(listener);
+        }
+      });
+    };
+  }, [units]);
+
+  // Updated helper function to check if a voice is being rendered
+  const isVoiceRendering = (unitId, genomeId) => {
+    if (!genomeId) return false;
+    
+    const renderingForUnit = renderingStates.get(unitId);
+    const isRendering = renderingForUnit ? renderingForUnit.has(genomeId) : false;
+    
+    return isRendering;
+  };
 
   return (
     <div className="h-fit max-h-[calc(100vh-5rem)] bg-gray-900/95 backdrop-blur border-r border-gray-800 overflow-y-auto">

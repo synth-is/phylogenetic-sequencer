@@ -1,6 +1,7 @@
 import {el} from '@elemaudio/core';
 import { UNIT_TYPES } from '../constants';
 import { BaseUnit } from './BaseUnit';
+import SoundRenderer from '../utils/SoundRenderer';
 
 export class LoopingUnit extends BaseUnit {
   constructor(id) {
@@ -22,6 +23,10 @@ export class LoopingUnit extends BaseUnit {
     this.loopingVoices = new Map();
     this.stateChangeCallbacks = new Set();
     this.initialized = false;
+
+    // Add rendering state
+    this.renderingVoices = new Map();
+    this.renderCallbacks = new Set();
   }
 
   async initialize() {
@@ -123,7 +128,11 @@ export class LoopingUnit extends BaseUnit {
           voice,
           audioUrl: cellData.audioUrl,
           duration: audioData.duration,
-          timestamp: Date.now()
+          timestamp: Date.now(),
+          // Add render parameters
+          duration: cellData.duration || 4,
+          pitch: cellData.noteDelta || 0,
+          velocity: cellData.velocity || 1
         });
 
         this.updateVoiceMix();
@@ -249,6 +258,8 @@ export class LoopingUnit extends BaseUnit {
     this.stateChangeCallbacks.clear();
     this.masterLoopId = null;
     this.masterLoopDuration = null;
+    this.renderingVoices.clear();
+    this.renderCallbacks.clear();
     super.cleanup();
   }
 
@@ -291,12 +302,50 @@ export class LoopingUnit extends BaseUnit {
     if (!this.loopingVoices.has(genomeId)) return;
 
     const voiceData = this.loopingVoices.get(genomeId);
-    const vfsKey = `sound-${genomeId}`;
+    const vfsKey = updates.vfsKey || `sound-${genomeId}`;
     const audioData = this.audioDataCache.get(vfsKey);
 
     if (!audioData) {
       console.error('No audio data found for voice:', genomeId);
       return;
+    }
+
+    // Check if this is a render parameter update
+    const isRenderUpdate = updates.duration !== undefined || 
+                           updates.pitch !== undefined ||
+                           updates.velocity !== undefined;
+    
+    // Handle render updates separately
+    if (isRenderUpdate && !updates.vfsKey) {
+      // Prepare render parameters
+      const renderParams = {
+        duration: updates.duration !== undefined ? updates.duration : 
+                 voiceData.duration !== undefined ? voiceData.duration : 4,
+        pitch: updates.pitch !== undefined ? updates.pitch : 
+              voiceData.pitch !== undefined ? voiceData.pitch : 0,
+        velocity: updates.velocity !== undefined ? updates.velocity : 
+                voiceData.velocity !== undefined ? voiceData.velocity : 1
+      };
+      
+      // Use the shared implementation with a success callback to update the looping voice
+      super.renderSound(
+        { 
+          genomeId, 
+          experiment: voiceData.experiment || 'unknown',
+          evoRunId: voiceData.evoRunId || 'unknown'
+        }, 
+        renderParams,
+        {
+          onSuccess: (renderKey) => {
+            // Update the looping voice with the new render key
+            this.updateLoopingVoice(genomeId, {
+              ...voiceData,
+              ...renderParams,
+              vfsKey: renderKey
+            });
+          }
+        }
+      );
     }
 
     // Calculate playback rate based on updates
@@ -340,5 +389,10 @@ export class LoopingUnit extends BaseUnit {
 
     this.updateAudioNodes([...Array.from(this.loopingVoices.values()).map(v => v.voice)]);
     this.notifyStateChange();
+  }
+  
+  // Compatibility method for state change notification
+  notifyRenderStateChange() {
+    super.notifyRenderStateChange();
   }
 }

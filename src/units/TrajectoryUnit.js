@@ -1,6 +1,7 @@
 import {el} from '@elemaudio/core';
 import { UNIT_TYPES } from '../constants';
 import { BaseUnit } from './BaseUnit';
+import SoundRenderer from '../utils/SoundRenderer';
 
 export class TrajectoryUnit extends BaseUnit {
   constructor(id) {
@@ -30,6 +31,10 @@ export class TrajectoryUnit extends BaseUnit {
     this.stateChangeCallbacks = new Set();
     this.activeGenomes = new Map(); // Add this line to initialize activeGenomes
     this.lastHoveredSound = null;  // Add this to store last hovered sound data
+
+    // Add rendering state
+    this.renderingVoices = new Map();
+    this.renderCallbacks = new Set();
   }
 
   addStateChangeCallback(callback) {
@@ -175,7 +180,11 @@ export class TrajectoryUnit extends BaseUnit {
         ...cellData,
         playbackRate: this.playbackRate,
         startOffset: 0,
-        stopOffset: 0
+        stopOffset: 0,
+        // Add default render parameters if not already present
+        duration: cellData.duration || 4,
+        pitch: cellData.noteDelta || 0,
+        velocity: cellData.velocity || 1
       };
 
     } catch (error) {
@@ -336,6 +345,9 @@ export class TrajectoryUnit extends BaseUnit {
     this.stateChangeCallbacks.clear();
     // Make sure to call parent cleanup to remove nodes from AudioEngine
     super.cleanup();
+
+    this.renderingVoices.clear();
+    this.renderCallbacks.clear();
   }
 
   // Add method to check if a genome has active voices
@@ -591,10 +603,32 @@ export class TrajectoryUnit extends BaseUnit {
     }
   }
 
-  // Add method to update explore parameters
+  // Update the updateExploreParams method to use the base renderSound method
   updateExploreParams(updates) {
     if (!this.lastHoveredSound) return;
     
+    // Check if this is a render parameter update
+    const isRenderUpdate = updates.duration !== undefined || 
+                           updates.pitch !== undefined ||
+                           updates.velocity !== undefined;
+    
+    // Handle render updates separately
+    if (isRenderUpdate) {
+      // Prepare render parameters
+      const renderParams = {
+        duration: updates.duration !== undefined ? updates.duration : 
+                 this.lastHoveredSound.duration !== undefined ? this.lastHoveredSound.duration : 4,
+        pitch: updates.pitch !== undefined ? updates.pitch : 
+              this.lastHoveredSound.pitch !== undefined ? this.lastHoveredSound.pitch : 0,
+        velocity: updates.velocity !== undefined ? updates.velocity : 
+                this.lastHoveredSound.velocity !== undefined ? this.lastHoveredSound.velocity : 1
+      };
+      
+      // Use the shared implementation
+      super.renderSound(this.lastHoveredSound, renderParams);
+    }
+    
+    // Update the parameters
     Object.assign(this.lastHoveredSound, updates);
     
     // Update audio engine parameters for next hover playback and recording
@@ -609,7 +643,88 @@ export class TrajectoryUnit extends BaseUnit {
     }
   }
 
-  // Add method to update trajectory event parameters
+  // Add method to request a render of a sound with specific parameters
+  async renderSound(soundData, renderParams) {
+    console.log('TrajectoryUnit - Rendering sound:', { soundData, renderParams });
+    const { genomeId } = soundData;
+    
+    // Check if we're already rendering this sound
+    if (this.renderingVoices.has(genomeId)) {
+      console.log('Already rendering this sound:', genomeId);
+      return;
+    }
+    
+    // Mark as rendering
+    this.renderingVoices.set(genomeId, renderParams);
+    
+    // Notify render state changed
+    this.notifyRenderStateChange();
+    
+    try {
+      // Request the render
+      await SoundRenderer.renderSound(
+        soundData,
+        renderParams,
+        (result) => {
+          console.log('Render complete:', result);
+          this.renderingVoices.delete(genomeId);
+          this.notifyRenderStateChange();
+          
+          if (result.success) {
+            // In a real implementation, we would load the new audio
+            // For now, we'll just update our cache with a reference
+            const renderKey = `sound-${genomeId}-${renderParams.duration}_${renderParams.pitch}_${renderParams.velocity}`;
+            
+            // Simulate loading the rendered audio into the VFS
+            // by copying the existing audio buffer
+            const originalKey = `sound-${genomeId}`;
+            if (this.audioDataCache.has(originalKey)) {
+              const originalBuffer = this.audioDataCache.get(originalKey);
+              
+              // In a real implementation, this would be a new buffer
+              // For now, we'll just reference the original
+              this.audioDataCache.set(renderKey, originalBuffer);
+              
+              // Update the VFS
+              this.audioEngine.getRenderer().updateVirtualFileSystem({
+                [renderKey]: originalBuffer.getChannelData(0)
+              });
+            }
+          }
+        },
+        (progress) => {
+          // Handle progress updates if needed
+          console.log('Render progress:', progress);
+        }
+      );
+    } catch (error) {
+      console.error('Render error:', error);
+      this.renderingVoices.delete(genomeId);
+      this.notifyRenderStateChange();
+    }
+  }
+  
+  // Add a method to check if a sound is being rendered
+  isRendering(genomeId) {
+    return this.renderingVoices.has(genomeId);
+  }
+  
+  // Add a method to register render state callbacks
+  addRenderStateCallback(callback) {
+    this.renderCallbacks.add(callback);
+  }
+  
+  // Add a method to remove render state callbacks
+  removeRenderStateCallback(callback) {
+    this.renderCallbacks.delete(callback);
+  }
+  
+  // Add a method to notify render state changes
+  notifyRenderStateChange() {
+    this.renderCallbacks.forEach(callback => callback());
+  }
+
+  // Update trajectory event params to include render params handling
   updateTrajectoryEvent(trajectoryId, eventIndex, updates) {
     console.log('updateTrajectoryEvent called:', {
       trajectoryId,
@@ -631,7 +746,31 @@ export class TrajectoryUnit extends BaseUnit {
       this.stopTrajectoryPlayback(trajectoryId);
     }
 
-    // Update the event parameters
+    // Check if this is a render parameter update
+    const isRenderUpdate = updates.duration !== undefined || 
+                           updates.pitch !== undefined ||
+                           updates.velocity !== undefined;
+    
+    // Handle render updates separately
+    if (isRenderUpdate && trajectory.events[eventIndex].cellData) {
+      const event = trajectory.events[eventIndex];
+      const cellData = event.cellData;
+      
+      // Prepare render parameters
+      const renderParams = {
+        duration: updates.duration !== undefined ? updates.duration : 
+                 event.duration !== undefined ? event.duration : 4,
+        pitch: updates.pitch !== undefined ? updates.pitch : 
+              event.pitch !== undefined ? event.pitch : 0,
+        velocity: updates.velocity !== undefined ? updates.velocity : 
+                event.velocity !== undefined ? event.velocity : 1
+      };
+      
+      // Use the shared implementation
+      super.renderSound(cellData, renderParams);
+    }
+
+    // Update the event parameters (this will happen regardless of render state)
     trajectory.events = trajectory.events.map((event, index) => {
       if (index === eventIndex) {
         const updatedEvent = { ...event, ...updates };

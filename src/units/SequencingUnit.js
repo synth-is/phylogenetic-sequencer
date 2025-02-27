@@ -21,6 +21,9 @@ export class SequencingUnit extends BaseUnit {
     this.isPlaying = true;  // Change default to true
     this.selectedTimestep = null; // Add this line
     this.pitch = 0;
+
+    // No need to re-declare renderingItems and renderCallbacks
+    // as they're now in BaseUnit as renderingVoices and renderCallbacks
   }
 
   async initialize() {
@@ -151,6 +154,38 @@ export class SequencingUnit extends BaseUnit {
 
   // Update sequence item parameters
   updateSequenceItem(genomeId, updates) {
+    // Check if this is a render parameter update
+    const isRenderUpdate = updates.duration !== undefined || 
+                           updates.pitch !== undefined ||
+                           updates.velocity !== undefined;
+    
+    // Find the item to update
+    const item = this.activeSequence.find(item => item.genomeId === genomeId);
+    
+    if (item && isRenderUpdate) {
+      // Prepare render parameters
+      const renderParams = {
+        duration: updates.duration !== undefined ? updates.duration : 
+                 item.duration !== undefined ? item.duration : 4,
+        pitch: updates.pitch !== undefined ? updates.pitch : 
+              item.pitch !== undefined ? item.pitch : 0,
+        velocity: updates.velocity !== undefined ? updates.velocity : 
+                item.velocity !== undefined ? item.velocity : 1
+      };
+      
+      // Use the shared implementation with a custom vfs key prefix for sequences
+      super.renderSound(
+        {
+          genomeId,
+          experiment: item.experiment || 'unknown',
+          evoRunId: item.evoRunId || 'unknown' 
+        }, 
+        renderParams,
+        { vfsKeyPrefix: `seq-${this.id}-` }
+      );
+    }
+    
+    // Continue with the regular update
     this.activeSequence = this.activeSequence.map(item => {
       if (item.genomeId === genomeId) {
         let newUpdates = { ...updates };
@@ -391,4 +426,17 @@ export class SequencingUnit extends BaseUnit {
     this.selectedTimestep = this.selectedTimestep === offset ? null : offset;
     return this.selectedTimestep;
   }
+
+  // Update compatibility methods to align with BaseUnit methods
+  notifyRenderStateChange() {
+    super.notifyRenderStateChange();
+  }
+  
+  // The renderingItems Map is now redundant, use renderingVoices from BaseUnit
+  isRendering(genomeId) {
+    return super.isRendering(genomeId);
+  }
+  
+  // Remove the original renderSound method since we're using the base implementation
+  // Remove duplicate addRenderStateCallback and removeRenderStateCallback methods
 }

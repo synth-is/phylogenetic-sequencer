@@ -6,10 +6,23 @@ export class CellDataFormatter {
     
     if (!data || !data.id) return null;
 
+    // Extract render parameters from config
+    const duration = config?.duration || "4";
+    const noteDelta = config?.noteDelta || "0";
+    const velocity = config?.velocity || "1";
+
+    // Determine if this is a rendered version or original
+    const isRendered = config?.isRendered || false;
+    const renderKey = isRendered ? `${data.id}-${duration}_${noteDelta}_${velocity}` : data.id;
+    
+    // Build audio URL using appropriate parameters
+    const audioUrl = `${LINEAGE_SOUNDS_BUCKET_HOST}/${experiment}/${evoRunId}/${data.id}-${duration}_${noteDelta}_${velocity}.wav`;
+
     // Ensure we pass through the config callbacks
     return {
-      audioUrl: `${LINEAGE_SOUNDS_BUCKET_HOST}/${experiment}/${evoRunId}/${data.id}-${config?.duration || "4"}_${config?.noteDelta || "0"}_${config?.velocity || "1"}.wav`,
+      audioUrl,
       genomeId: data.id,
+      renderKey,
       score: data.s || 0,
       generation: data.gN || 0,
       position: { x: 0, y: 0 },
@@ -20,8 +33,19 @@ export class CellDataFormatter {
       },
       config: {  // Add this to preserve callbacks
         ...config,
-        onEnded: config?.onEnded
-      }
+        onEnded: config?.onEnded,
+        duration,
+        noteDelta,
+        velocity,
+        isRendered
+      },
+      // Add these fields directly at the top level for convenience
+      experiment,
+      evoRunId,
+      duration: parseFloat(duration),
+      noteDelta: parseFloat(noteDelta),
+      velocity: parseFloat(velocity),
+      isRendered
     };
   }
 }
