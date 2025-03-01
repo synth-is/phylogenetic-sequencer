@@ -46,7 +46,13 @@ export class CellDataFormatter {
       duration: parseFloat(duration),
       noteDelta: parseFloat(noteDelta),
       velocity: parseFloat(velocity),
-      isRendered
+      isRendered,
+      // Add render metadata for potential SoundRenderer fallback
+      renderParams: {
+        duration: parseFloat(duration),
+        pitch: parseFloat(noteDelta),
+        velocity: parseFloat(velocity)
+      }
     };
   }
 }

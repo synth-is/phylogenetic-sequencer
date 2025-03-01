@@ -1,6 +1,7 @@
 import {el} from '@elemaudio/core';
 import { UNIT_TYPES } from '../constants';
 import { BaseUnit } from './BaseUnit';
+import SoundRenderer from '../utils/SoundRenderer';
 
 export class SequencingUnit extends BaseUnit {
   constructor(id) {
@@ -9,7 +10,8 @@ export class SequencingUnit extends BaseUnit {
     this.tempo = 120;
     this.isPlaying = true;  // Change default to true
     this.currentStep = 0;
-    this.audioDataCache = new Map();
+    this.audioDataCache = new Map(); // Will store metadata instead of full buffers
+    this.audioBufferSources = new Map(); // To track sources by ID
     
     // Add new properties for sequencing
     this.activeSequence = [];
@@ -174,7 +176,7 @@ export class SequencingUnit extends BaseUnit {
       };
       
       // Use the shared implementation with a custom vfs key prefix for sequences
-      super.renderSound(
+      this.renderSound(
         {
           genomeId,
           experiment: item.experiment || 'unknown',
@@ -201,6 +203,16 @@ export class SequencingUnit extends BaseUnit {
     });
     
     this.updateSequencer();
+  }
+
+  // Add renderSound method that uses the base implementation
+  async renderSound(soundData, renderParams, options = {}) {
+    // Add sequence-specific options here
+    const sequenceOptions = {
+      ...options,
+      vfsKeyPrefix: options.vfsKeyPrefix || `seq-${this.id}-`
+    };
+    return super.renderSound(soundData, renderParams, sequenceOptions);
   }
 
   // Remove sequence item
@@ -239,19 +251,34 @@ export class SequencingUnit extends BaseUnit {
       return [];
     }
 
-    // Load all samples into VFS first
+    // Load all samples into VFS first using unified renderSound method
     for (const item of this.activeSequence) {
       const vfsKey = `seq-${this.id}-${item.genomeId}`;
+      
       if (!this.audioDataCache.has(vfsKey)) {
-        const response = await fetch(item.audioUrl);
-        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-        const arrayBuffer = await response.arrayBuffer();
-        const audioData = await context.decodeAudioData(arrayBuffer);
-        this.audioDataCache.set(vfsKey, audioData);
-        
-        const vfsUpdate = {};
-        vfsUpdate[vfsKey] = audioData.getChannelData(0);
-        await renderer.updateVirtualFileSystem(vfsUpdate);
+        try {
+          // Use the unified renderSound method
+          const result = await this.renderSound(
+            {
+              genomeId: item.genomeId,
+              experiment: item.experiment || 'unknown',
+              evoRunId: item.evoRunId || 'unknown'
+            },
+            {
+              duration: item.duration || 4,
+              pitch: item.noteDelta || 0,
+              velocity: item.velocity || 1
+            },
+            { vfsKeyPrefix: `seq-${this.id}-` }
+          );
+          
+          if (result && result.metadata) {
+            // Store just the metadata
+            this.audioDataCache.set(vfsKey, result.metadata);
+          }
+        } catch (error) {
+          console.error(`Failed to load audio for sequence item: ${error.message}`);
+        }
       }
     }
 
@@ -287,12 +314,12 @@ export class SequencingUnit extends BaseUnit {
 
       items.forEach((item, itemIndex) => {
         const vfsKey = `seq-${this.id}-${item.genomeId}`;
-        const audioData = this.audioDataCache.get(vfsKey);
-        if (!audioData) return;
+        const audioMetadata = this.audioDataCache.get(vfsKey);
+        if (!audioMetadata) return;
 
         const relativeOffset = (item.offset - 0.5) * stepSpacing * sequenceDuration;
         const startTime = baseTime + relativeOffset;
-        const duration = audioData.duration * item.durationScale;
+        const duration = audioMetadata.duration * item.durationScale;
 
         try {
           const voice = el.mul(
@@ -399,6 +426,7 @@ export class SequencingUnit extends BaseUnit {
     this.stop();
     this.activeSequence = [];
     this.audioDataCache.clear();
+    this.audioBufferSources.clear();
     this.voiceNodes.clear();
     super.cleanup();
   }

@@ -1,7 +1,6 @@
 import {el} from '@elemaudio/core';
 import { UNIT_TYPES } from '../constants';
 import { BaseUnit } from './BaseUnit';
-import SoundRenderer from '../utils/SoundRenderer';
 
 export class TrajectoryUnit extends BaseUnit {
   constructor(id) {
@@ -10,7 +9,8 @@ export class TrajectoryUnit extends BaseUnit {
     this.muted = false;
     this.soloed = false;
     this.volume = -12;
-    this.audioDataCache = new Map();
+    this.audioDataCache = new Map(); // Will store metadata instead of full buffers
+    this.audioBufferSources = new Map(); // To track source audio buffers by Channel IDs
     this.oneOffVoices = new Map();
     this.maxVoices = 4;
     this.pitch = 0;
@@ -98,24 +98,40 @@ export class TrajectoryUnit extends BaseUnit {
     if (!this.active || this.muted || !cellData) return;
 
     const { audioUrl, genomeId } = cellData;
-    if (!audioUrl || !genomeId) return;
+    if (!genomeId) return;
 
     try {
       const vfsKey = `sound-${genomeId}`;
-      let audioData;
+      let audioMetadata = this.audioDataCache.get(vfsKey);
   
-      if (!this.audioDataCache.has(vfsKey)) {
-        const response = await fetch(audioUrl);
-        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-        const arrayBuffer = await response.arrayBuffer();
-        audioData = await this.audioEngine.getContext().decodeAudioData(arrayBuffer);
-        this.audioDataCache.set(vfsKey, audioData);
-        
-        await this.audioEngine.getRenderer().updateVirtualFileSystem({
-          [vfsKey]: audioData.getChannelData(0)
-        });
-      } else {
-        audioData = this.audioDataCache.get(vfsKey);
+      if (!audioMetadata) {
+        try {
+          const renderParams = {
+            duration: cellData.duration || 4,
+            pitch: cellData.noteDelta || 0,
+            velocity: cellData.velocity || 1
+          };
+
+          // Use the unified BaseUnit renderSound method instead of direct fetch/SoundRenderer logic
+          const result = await this.renderSound(
+            {
+              genomeId,
+              experiment: cellData.experiment || 'unknown',
+              evoRunId: cellData.evoRunId || 'unknown'
+            },
+            renderParams
+          );
+
+          if (result) {
+            audioMetadata = result.metadata;
+          } else {
+            throw new Error('Failed to obtain audio data');
+          }
+        } catch (error) {
+          console.error('Failed to obtain audio data:', error);
+          cellData.config?.onEnded?.();
+          return;
+        }
       }
 
       // Create voice with proper trigger
@@ -156,7 +172,7 @@ export class TrajectoryUnit extends BaseUnit {
       }
 
       // Set up voice completion timeout
-      const totalDuration = audioData.duration + 0.1; // Add small release time
+      const totalDuration = audioMetadata.duration + 0.1; // Add small release time
       const timeoutId = setTimeout(() => {
         this.oneOffVoices.delete(voiceId);
         this.voiceTimeouts.delete(voiceId);
@@ -304,6 +320,7 @@ export class TrajectoryUnit extends BaseUnit {
       clearTimeout(this.throttleTimeout);
     }
     this.audioDataCache.clear();
+    this.audioBufferSources.clear(); // Clear the audio buffer sources map
     this.activeVoices.clear();
     this.loopingVoices.clear();
     this.oneOffVoices.clear();
@@ -399,10 +416,10 @@ export class TrajectoryUnit extends BaseUnit {
       this.recordingStartTime = Date.now();
     }
 
-    // Get audio buffer length to store with event
+    // Get audio metadata from cache
     const vfsKey = `sound-${cellData.genomeId}`;
-    const audioData = this.audioDataCache.get(vfsKey);
-    const bufferLength = audioData ? audioData.length : 0;
+    const audioMetadata = this.audioDataCache.get(vfsKey);
+    const bufferLength = audioMetadata ? audioMetadata.length : 0;
 
     // Use current explore settings for new recorded events
     const trajectory = this.trajectories.get(this.currentRecordingId);
@@ -414,7 +431,13 @@ export class TrajectoryUnit extends BaseUnit {
       playbackRate: this.lastHoveredSound?.playbackRate || 1,
       startOffset: this.lastHoveredSound?.startOffset || 0,
       stopOffset: this.lastHoveredSound?.stopOffset || 0,
-      bufferLength
+      bufferLength,
+      // Store render parameters for potential future regeneration
+      renderParams: {
+        duration: cellData.duration || 4,
+        pitch: cellData.noteDelta || 0,
+        velocity: cellData.velocity || 1
+      }
     });
   }
 
@@ -461,20 +484,30 @@ export class TrajectoryUnit extends BaseUnit {
 
       // Ensure all samples are loaded in VFS first
       for (const event of trajectory.events) {
-        if (event.cellData && event.cellData.audioUrl) {
+        if (event.cellData && event.cellData.genomeId) {
           const vfsKey = `sound-${event.cellData.genomeId}`;
           
           if (!this.audioDataCache.has(vfsKey)) {
-            const response = await fetch(event.cellData.audioUrl);
-            if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-            const arrayBuffer = await response.arrayBuffer();
-            const audioData = await context.decodeAudioData(arrayBuffer);
-            this.audioDataCache.set(vfsKey, audioData);
+            // Use the unified renderSound method
+            const renderParams = event.renderParams || {
+              duration: event.cellData.duration || 4,
+              pitch: event.cellData.noteDelta || 0,
+              velocity: event.cellData.velocity || 1
+            };
             
-            // Update VFS
-            const vfsUpdate = {};
-            vfsUpdate[vfsKey] = audioData.getChannelData(0);
-            await renderer.updateVirtualFileSystem(vfsUpdate);
+            const result = await this.renderSound(
+              {
+                genomeId: event.cellData.genomeId,
+                experiment: event.cellData.experiment || 'unknown',
+                evoRunId: event.cellData.evoRunId || 'unknown'
+              },
+              renderParams
+            );
+            
+            if (result) {
+              // Store only metadata
+              this.audioDataCache.set(vfsKey, result.metadata);
+            }
           }
         }
       }
@@ -530,8 +563,8 @@ export class TrajectoryUnit extends BaseUnit {
         const vfsKey = `sound-${event.genomeId}`;
         // Find the corresponding event in trajectory.events that has our parameters
         const trajectoryEvent = trajectory.events[index];
-        const audioData = this.audioDataCache.get(vfsKey);
-        const bufferLength = audioData ? audioData.length : 0;
+        const audioMetadata = this.audioDataCache.get(vfsKey);
+        const bufferLength = audioMetadata ? audioMetadata.length : 0;
 
         console.log('Creating player for event:', {
           genomeId: event.genomeId,
@@ -624,8 +657,15 @@ export class TrajectoryUnit extends BaseUnit {
                 this.lastHoveredSound.velocity !== undefined ? this.lastHoveredSound.velocity : 1
       };
       
-      // Use the shared implementation
-      super.renderSound(this.lastHoveredSound, renderParams);
+      // Use the shared implementation from BaseUnit
+      this.renderSound(
+        {
+          genomeId: this.lastHoveredSound.genomeId,
+          experiment: this.lastHoveredSound.experiment || 'unknown',
+          evoRunId: this.lastHoveredSound.evoRunId || 'unknown'
+        }, 
+        renderParams
+      );
     }
     
     // Update the parameters
@@ -643,67 +683,11 @@ export class TrajectoryUnit extends BaseUnit {
     }
   }
 
-  // Add method to request a render of a sound with specific parameters
-  async renderSound(soundData, renderParams) {
-    console.log('TrajectoryUnit - Rendering sound:', { soundData, renderParams });
-    const { genomeId } = soundData;
-    
-    // Check if we're already rendering this sound
-    if (this.renderingVoices.has(genomeId)) {
-      console.log('Already rendering this sound:', genomeId);
-      return;
-    }
-    
-    // Mark as rendering
-    this.renderingVoices.set(genomeId, renderParams);
-    
-    // Notify render state changed
-    this.notifyRenderStateChange();
-    
-    try {
-      // Request the render
-      await SoundRenderer.renderSound(
-        soundData,
-        renderParams,
-        (result) => {
-          console.log('Render complete:', result);
-          this.renderingVoices.delete(genomeId);
-          this.notifyRenderStateChange();
-          
-          if (result.success) {
-            // In a real implementation, we would load the new audio
-            // For now, we'll just update our cache with a reference
-            const renderKey = `sound-${genomeId}-${renderParams.duration}_${renderParams.pitch}_${renderParams.velocity}`;
-            
-            // Simulate loading the rendered audio into the VFS
-            // by copying the existing audio buffer
-            const originalKey = `sound-${genomeId}`;
-            if (this.audioDataCache.has(originalKey)) {
-              const originalBuffer = this.audioDataCache.get(originalKey);
-              
-              // In a real implementation, this would be a new buffer
-              // For now, we'll just reference the original
-              this.audioDataCache.set(renderKey, originalBuffer);
-              
-              // Update the VFS
-              this.audioEngine.getRenderer().updateVirtualFileSystem({
-                [renderKey]: originalBuffer.getChannelData(0)
-              });
-            }
-          }
-        },
-        (progress) => {
-          // Handle progress updates if needed
-          console.log('Render progress:', progress);
-        }
-      );
-    } catch (error) {
-      console.error('Render error:', error);
-      this.renderingVoices.delete(genomeId);
-      this.notifyRenderStateChange();
-    }
+  // Replace the renderSound implementation to use the BaseUnit method
+  async renderSound(soundData, renderParams, options = {}) {
+    return super.renderSound(soundData, renderParams, options);
   }
-  
+
   // Add a method to check if a sound is being rendered
   isRendering(genomeId) {
     return this.renderingVoices.has(genomeId);
@@ -766,8 +750,15 @@ export class TrajectoryUnit extends BaseUnit {
                 event.velocity !== undefined ? event.velocity : 1
       };
       
-      // Use the shared implementation
-      super.renderSound(cellData, renderParams);
+      // Use the shared implementation from BaseUnit
+      this.renderSound(
+        {
+          genomeId: cellData.genomeId,
+          experiment: cellData.experiment || 'unknown',
+          evoRunId: cellData.evoRunId || 'unknown'
+        }, 
+        renderParams
+      );
     }
 
     // Update the event parameters (this will happen regardless of render state)

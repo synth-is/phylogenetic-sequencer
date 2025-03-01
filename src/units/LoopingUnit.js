@@ -10,7 +10,8 @@ export class LoopingUnit extends BaseUnit {
     this.muted = false;
     this.soloed = false;
     this.volume = -12;
-    this.audioDataCache = new Map();
+    this.audioDataCache = new Map(); // Will store metadata instead of full buffers
+    this.audioBufferSources = new Map(); // To track sources by ID
     this.maxVoices = 4;
     this.pitch = 0;
     this.playbackRate = 1.0;
@@ -81,39 +82,49 @@ export class LoopingUnit extends BaseUnit {
   }
 
   async handleCellHover(cellData) {
+    console.log('LoopingUnit handleCellHover:', cellData);
     if (!this.initialized || !this.active || this.muted || !cellData) return;
 
     const { audioUrl, genomeId } = cellData;
-    if (!audioUrl || !genomeId) return;
+    if (!genomeId) return;
 
     try {
       // Load audio data if needed
       const vfsKey = `sound-${genomeId}`;
-      let audioData;
+      let audioMetadata = this.audioDataCache.get(vfsKey);
       
-      if (!this.audioDataCache.has(vfsKey)) {
-        const response = await fetch(audioUrl);
-        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-        const arrayBuffer = await response.arrayBuffer();
-        audioData = await this.audioEngine.getContext().decodeAudioData(arrayBuffer);
-        this.audioDataCache.set(vfsKey, audioData);
-        
-        // Update VFS
-        await this.audioEngine.getRenderer().updateVirtualFileSystem({
-          [vfsKey]: audioData.getChannelData(0)
-        });
-
-        // If this is the first loop, set it as the master
-        if (this.loopingVoices.size === 0) {
-          console.log('Setting master loop:', genomeId, audioData.duration);
-          this.masterLoopId = genomeId;
-          this.masterLoopDuration = audioData.duration;
+      if (!audioMetadata) {
+        try {
+          const renderParams = {
+            duration: cellData.duration || 4,
+            pitch: cellData.noteDelta || 0,
+            velocity: cellData.velocity || 1
+          };
+          
+          // Use the unified BaseUnit renderSound method
+          const result = await this.renderSound(
+            {
+              genomeId,
+              experiment: cellData.experiment || 'unknown',
+              evoRunId: cellData.evoRunId || 'unknown'
+            },
+            renderParams
+          );
+          
+          if (result) {
+            audioMetadata = result.metadata;
+          } else {
+            throw new Error('Failed to obtain audio data');
+          }
+        } catch (error) {
+          console.error('Failed to obtain audio data:', error);
+          cellData.config?.onLoopStateChanged?.(false);
+          return;
         }
-      } else {
-        audioData = this.audioDataCache.get(vfsKey);
       }
 
-      // Toggle looping state
+      // Store cell data experiment and evoRunId with the looping voice
+      // This ensures we have this information for updates later
       if (this.loopingVoices.has(genomeId)) {
         this.stopLoopingVoice(genomeId);
         cellData.config?.onLoopStateChanged?.(false);
@@ -123,11 +134,13 @@ export class LoopingUnit extends BaseUnit {
           this.stopLoopingVoice(oldestId);
         }
 
-        const voice = this.createLoopingVoice(genomeId, audioData);
+        const voice = this.createLoopingVoice(genomeId, audioMetadata);
         this.loopingVoices.set(genomeId, {
           voice,
           audioUrl: cellData.audioUrl,
-          duration: audioData.duration,
+          experiment: cellData.experiment,  // Make sure to store these
+          evoRunId: cellData.evoRunId,     // values from cellData
+          duration: audioMetadata.duration,
           timestamp: Date.now(),
           // Add render parameters
           duration: cellData.duration || 4,
@@ -146,7 +159,7 @@ export class LoopingUnit extends BaseUnit {
     }
   }
 
-  createLoopingVoice(genomeId, audioData, params = {}) {
+  createLoopingVoice(genomeId, audioMetadata, params = {}) {
     const {
       offset = 0.5,
       playbackRate = this.playbackRate
@@ -221,9 +234,11 @@ export class LoopingUnit extends BaseUnit {
 
     // Recreate all voices using their individual stored pitches
     this.loopingVoices.forEach((voiceData, genomeId) => {
-      const audioData = this.audioDataCache.get(`sound-${genomeId}`);
+      const audioMetadata = this.audioDataCache.get(`sound-${genomeId}`);
+      if (!audioMetadata) return;
+      
       // Use the voice's stored pitch/playbackRate instead of the master rate
-      voiceData.voice = this.createLoopingVoice(genomeId, audioData, {
+      voiceData.voice = this.createLoopingVoice(genomeId, audioMetadata, {
         playbackRate: voiceData.playbackRate || this.playbackRate,
         pitch: voiceData.pitch || this.pitch
       });
@@ -254,6 +269,7 @@ export class LoopingUnit extends BaseUnit {
 
   cleanup() {
     this.audioDataCache.clear();
+    this.audioBufferSources.clear();
     this.loopingVoices.clear();
     this.stateChangeCallbacks.clear();
     this.masterLoopId = null;
@@ -298,37 +314,37 @@ export class LoopingUnit extends BaseUnit {
     this.notifyStateChange();
   }
 
+  // Completely rewritten updateLoopingVoice method with proper error handling and logging
   updateLoopingVoice(genomeId, updates) {
-    if (!this.loopingVoices.has(genomeId)) return;
-
-    const voiceData = this.loopingVoices.get(genomeId);
-    const vfsKey = updates.vfsKey || `sound-${genomeId}`;
-    const audioData = this.audioDataCache.get(vfsKey);
-
-    if (!audioData) {
-      console.error('No audio data found for voice:', genomeId);
+    console.log('Updating looping voice:', { genomeId, updates });
+    
+    if (!this.loopingVoices.has(genomeId)) {
+      console.error('No looping voice found with ID:', genomeId);
       return;
     }
 
-    // Check if this is a render parameter update
-    const isRenderUpdate = updates.duration !== undefined || 
-                           updates.pitch !== undefined ||
-                           updates.velocity !== undefined;
+    const voiceData = this.loopingVoices.get(genomeId);
     
-    // Handle render updates separately
+    // Check if this is a render parameter update - needs new audio data
+    const isRenderUpdate = updates.duration !== undefined || 
+                          updates.pitch !== undefined ||
+                          updates.velocity !== undefined;
+    
+    // For render parameter updates, use the renderSound method
     if (isRenderUpdate && !updates.vfsKey) {
+      console.log('LoopingUnit: Render update detected');
+      
       // Prepare render parameters
       const renderParams = {
-        duration: updates.duration !== undefined ? updates.duration : 
-                 voiceData.duration !== undefined ? voiceData.duration : 4,
-        pitch: updates.pitch !== undefined ? updates.pitch : 
-              voiceData.pitch !== undefined ? voiceData.pitch : 0,
-        velocity: updates.velocity !== undefined ? updates.velocity : 
-                voiceData.velocity !== undefined ? voiceData.velocity : 1
+        duration: updates.duration ?? voiceData.duration ?? 4,
+        pitch: updates.pitch ?? voiceData.pitch ?? 0,
+        velocity: updates.velocity ?? voiceData.velocity ?? 1
       };
       
-      // Use the shared implementation with a success callback to update the looping voice
-      super.renderSound(
+      console.log('Rendering with params:', renderParams);
+      
+      // Use the shared implementation with a success callback
+      this.renderSound(
         { 
           genomeId, 
           experiment: voiceData.experiment || 'unknown',
@@ -336,27 +352,108 @@ export class LoopingUnit extends BaseUnit {
         }, 
         renderParams,
         {
-          onSuccess: (renderKey) => {
+          onSuccess: (renderKey, audioBuffer) => {
             // Update the looping voice with the new render key
+            const metadata = {
+              duration: audioBuffer.duration,
+              length: audioBuffer.length,
+              sampleRate: audioBuffer.sampleRate,
+              numberOfChannels: audioBuffer.numberOfChannels
+            };
+            this.audioDataCache.set(renderKey, metadata);
+            
+            // Update with the new render key
             this.updateLoopingVoice(genomeId, {
-              ...voiceData,
-              ...renderParams,
+              ...updates,
               vfsKey: renderKey
             });
           }
         }
       );
+      return; // Exit early, we'll continue after render is complete
     }
 
-    // Calculate playback rate based on updates
-    let newPlaybackRate;
-    if (updates.playbackRate !== undefined) {
-      // Use provided playbackRate directly
-      newPlaybackRate = updates.playbackRate;
-    } else {
-      // Keep existing playbackRate or use unit's default
-      newPlaybackRate = voiceData.playbackRate || this.playbackRate;
+    // For non-render updates like playbackRate, startOffset, etc.
+    // Get the metadata from the original key
+    const originalVfsKey = `sound-${genomeId}`;
+    const customVfsKey = voiceData.vfsKey || originalVfsKey;
+    
+    // First check if we have metadata directly for the key we're using
+    let audioMetadata = this.audioDataCache.get(customVfsKey);
+    
+    // If not found, try the original key as a fallback
+    if (!audioMetadata && customVfsKey !== originalVfsKey) {
+      audioMetadata = this.audioDataCache.get(originalVfsKey);
     }
+    
+    // If still not found, look for any metadata for this genome
+    if (!audioMetadata) {
+      // Get all cache keys
+      const allKeys = Array.from(this.audioDataCache.keys());
+      console.log('Looking for metadata in all keys:', { 
+        genomeId, 
+        allKeys,
+        searchingFor: `sound-${genomeId}`
+      });
+      
+      // Find any key that starts with sound-{genomeId}
+      for (const key of allKeys) {
+        if (key.startsWith(`sound-${genomeId}`)) {
+          audioMetadata = this.audioDataCache.get(key);
+          console.log(`Found metadata using key: ${key}`);
+          break;
+        }
+      }
+    }
+    
+    // If we still don't have metadata, check if the Audio Engine has this voice loaded
+    if (!audioMetadata && this.audioEngine) {
+      // Try to get it from the Audio Engine's VFS if available
+      const audioData = this.audioEngine.getAudioData?.(originalVfsKey);
+      if (audioData) {
+        // Create metadata from the audio data
+        audioMetadata = {
+          duration: audioData.duration || voiceData.duration || 4,
+          length: audioData.length || (48000 * 4), // Default to 4 seconds if unknown
+          sampleRate: audioData.sampleRate || 48000,
+          numberOfChannels: audioData.numberOfChannels || 1
+        };
+        
+        // Cache it for future use
+        this.audioDataCache.set(originalVfsKey, audioMetadata);
+        console.log('Created metadata from AudioEngine data:', audioMetadata);
+      }
+    }
+    
+    // Last resort - if we still don't have metadata, create a placeholder based on voiceData
+    if (!audioMetadata && voiceData) {
+      console.warn('Creating dummy metadata as last resort for:', genomeId);
+      audioMetadata = {
+        duration: voiceData.duration || 4,
+        length: (voiceData.duration || 4) * 48000,
+        sampleRate: 48000,
+        numberOfChannels: 1
+      };
+      
+      // Cache this placeholder
+      this.audioDataCache.set(originalVfsKey, audioMetadata);
+    }
+    
+    if (!audioMetadata) {
+      console.error('No audio metadata found for voice:', genomeId, {
+        availableKeys: Array.from(this.audioDataCache.keys()),
+        voiceData: voiceData
+      });
+      return;
+    }
+
+    // For VFS path, use either the provided key or the original
+    const vfsKey = updates.vfsKey || voiceData.vfsKey || originalVfsKey;
+    console.log('Using VFS key for playback:', vfsKey);
+
+    // Calculate playback rate based on updates
+    const newPlaybackRate = updates.playbackRate ?? voiceData.playbackRate ?? this.playbackRate;
+    console.log('Setting playback rate:', newPlaybackRate);
 
     // Create voice with current parameters
     const voice = el.mul(
@@ -366,8 +463,8 @@ export class LoopingUnit extends BaseUnit {
           path: vfsKey,
           mode: 'loop',
           playbackRate: newPlaybackRate,
-          startOffset: Math.floor((updates.startOffset ?? 0) * audioData.length),
-          endOffset: Math.floor((updates.stopOffset ?? 0) * audioData.length),
+          startOffset: Math.floor((updates.startOffset ?? voiceData.startOffset ?? 0) * audioMetadata.length),
+          endOffset: Math.floor((updates.stopOffset ?? voiceData.stopOffset ?? 0) * audioMetadata.length),
           key: `looping-${genomeId}-${this.id}`
         },
         this.getTriggerSignal()
@@ -378,7 +475,7 @@ export class LoopingUnit extends BaseUnit {
       })
     );
 
-    // Update voice data, only updating the provided parameters
+    // Update voice data, merging only the updates provided
     this.loopingVoices.set(genomeId, {
       ...voiceData,
       ...updates,
@@ -387,12 +484,19 @@ export class LoopingUnit extends BaseUnit {
       timestamp: Date.now()
     });
 
-    this.updateAudioNodes([...Array.from(this.loopingVoices.values()).map(v => v.voice)]);
+    console.log('Voice updated successfully');
+    this.updateVoiceMix();
     this.notifyStateChange();
   }
   
   // Compatibility method for state change notification
   notifyRenderStateChange() {
     super.notifyRenderStateChange();
+  }
+
+  // Replace SoundRenderer direct calls with our base method
+  async renderSound(soundData, renderParams, options = {}) {
+    console.log('LoopingUnit - Rendering sound:', { soundData, renderParams, options });
+    return super.renderSound(soundData, renderParams, options);
   }
 }
