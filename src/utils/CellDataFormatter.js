@@ -16,7 +16,8 @@ export class CellDataFormatter {
     const renderKey = isRendered ? `${data.id}-${duration}_${noteDelta}_${velocity}` : data.id;
     
     // Build audio URL using appropriate parameters
-    const audioUrl = `${LINEAGE_SOUNDS_BUCKET_HOST}/${experiment}/${evoRunId}/${data.id}-${duration}_${noteDelta}_${velocity}.wav`;
+    // const audioUrl = `${LINEAGE_SOUNDS_BUCKET_HOST}/${experiment}/${evoRunId}/${data.id}-${duration}_${noteDelta}_${velocity}.wav`;
+    const audioUrl = `${LINEAGE_SOUNDS_BUCKET_HOST}/evorenders/${evoRunId}/${data.id}-${duration}_${noteDelta}_${velocity}.wav`;
 
     // Ensure we pass through the config callbacks
     return {

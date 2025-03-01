@@ -94,7 +94,7 @@ function MainContent({
   }
 
   const runs = Object.keys(lineageTreesIndex);
-  const steps = lineageTreesIndex[props.selectedRun].all.length;
+  const steps = lineageTreesIndex[props.selectedRun].length;
 
   return (
     <div className="fixed inset-0 flex flex-col bg-gray-950">
@@ -105,7 +105,7 @@ function MainContent({
             <PhylogeneticViewer 
               treeData={treeData}
               experiment={props.selectedRun}
-              evoRunId={getEvoRunIdFromSelectedStep(lineageTreesIndex[props.selectedRun].all[props.selectedIndex])}
+              evoRunId={getEvoRunIdFromSelectedStep(lineageTreesIndex[props.selectedRun][props.selectedIndex])}
               showSettings={props.showSettings}
               setShowSettings={props.setShowSettings}
               hasAudioInteraction={props.hasAudioInteraction}
@@ -116,7 +116,7 @@ function MainContent({
             <PhylogeneticViewerSVG 
               treeData={treeData}
               experiment={props.selectedRun}
-              evoRunId={getEvoRunIdFromSelectedStep(lineageTreesIndex[props.selectedRun].all[props.selectedIndex])}
+              evoRunId={getEvoRunIdFromSelectedStep(lineageTreesIndex[props.selectedRun][props.selectedIndex])}
               showSettings={props.showSettings}
               setShowSettings={props.setShowSettings}
               hasAudioInteraction={props.hasAudioInteraction}
@@ -128,8 +128,8 @@ function MainContent({
               showSettings={props.showSettings}
               setShowSettings={props.setShowSettings}
               experiment={props.selectedRun}
-              evoRunId={getEvoRunIdFromSelectedStep(lineageTreesIndex[props.selectedRun].all[props.selectedIndex])}
-              matrixUrl={getMatrixUrlFromTreePath(lineageTreesIndex[props.selectedRun].all[props.selectedIndex])}
+              evoRunId={getEvoRunIdFromSelectedStep(lineageTreesIndex[props.selectedRun][props.selectedIndex])}
+              matrixUrl={getMatrixUrlFromTreePath(lineageTreesIndex[props.selectedRun][props.selectedIndex])}
               hasAudioInteraction={props.hasAudioInteraction}
               onAudioInteraction={() => props.setHasAudioInteraction(true)}
               onCellHover={handleCellHover}  // Pass the handler directly
@@ -223,7 +223,7 @@ function MainApp() {
   // Group all useEffect calls together
   useEffect(() => {
     if (fetchedIndexRef.current) return;
-    fetch(`${LINEAGE_SOUNDS_BUCKET_HOST}/lineage-trees-metadata/lineage-trees.json`)
+    fetch(`${LINEAGE_SOUNDS_BUCKET_HOST}/lineage-trees-metadata/evolution-runs-overview.json`)
       .then(response => response.json())
       .then(index => {
         setLineageTreesIndex(index);
@@ -234,9 +234,9 @@ function MainApp() {
 
   useEffect(() => {
     if (!lineageTreesIndex) return;
-    const treePath = lineageTreesIndex[selectedRun].all[selectedIndex];
+    const treePath = lineageTreesIndex[selectedRun][selectedIndex];
     if (fetchedTreesRef.current.has(treePath)) return;
-    fetch(`${LINEAGE_SOUNDS_BUCKET_HOST}/lineage-trees/${treePath}`)
+    fetch(`${LINEAGE_SOUNDS_BUCKET_HOST}/lineage-trees/tree_${treePath}_all.json`)
       .then(response => response.json())
       .then(treeJson => {
         setTreeData(treeJson);
@@ -256,10 +256,10 @@ function MainApp() {
   // Simplify the data fetching effect
   useEffect(() => {
     if (!lineageTreesIndex || !selectedRun || selectedIndex === undefined) return;
-    const treePath = lineageTreesIndex[selectedRun].all[selectedIndex];
+    const treePath = lineageTreesIndex[selectedRun][selectedIndex];
     
     setTreeData(null); // Clear current data before fetching
-    fetch(`${LINEAGE_SOUNDS_BUCKET_HOST}/lineage-trees/${treePath}`)
+    fetch(`${LINEAGE_SOUNDS_BUCKET_HOST}/lineage-trees/tree_${treePath}_all.json`)
       .then(response => response.json())
       .then(treeJson => {
         setTreeData(treeJson);
@@ -455,7 +455,8 @@ function getEvoRunIdFromSelectedStep(treeJSONfilePath) {
   }
   console.log("Selected step:", selectedStep);
   console.log("Suffix index:", suffixIndex);
-  const evoRunId = selectedStep.substring(selectedStep.indexOf("tree_")+5, suffixIndex);
+  // const evoRunId = selectedStep.substring(selectedStep.indexOf("tree_")+5, suffixIndex);
+  const evoRunId = selectedStep;
   console.log("Evo run ID:", evoRunId);
   return evoRunId;
 }
