@@ -2,6 +2,7 @@ import {el} from '@elemaudio/core';
 import { UNIT_TYPES } from '../constants';
 import { BaseUnit } from './BaseUnit';
 import SoundRenderer from '../utils/SoundRenderer';
+import VoiceParameterRegistry from '../utils/VoiceParameterRegistry';
 
 export class SequencingUnit extends BaseUnit {
   constructor(id) {
@@ -32,11 +33,32 @@ export class SequencingUnit extends BaseUnit {
     try {
       console.log(`Initializing SequencingUnit ${this.id}`);
       await super.initialize();
+      
+      // Register for parameter updates
+      VoiceParameterRegistry.registerRenderParamListener(this.id.toString(), 
+        (voiceId, genomeId, params) => this.handleVoiceParamUpdate(voiceId, genomeId, params));
+      
       return true;
     } catch (err) {
       console.error(`SequencingUnit ${this.id} initialization error:`, err);
       return false;
     }
+  }
+
+  // Handle parameter updates for voices
+  handleVoiceParamUpdate(voiceId, genomeId, params) {
+    console.log(`SequencingUnit ${this.id}: Voice param update for ${voiceId}`, params);
+    
+    // Find sequence items matching this genome and update them
+    const itemsToUpdate = this.activeSequence.filter(item => item.genomeId === genomeId);
+    
+    itemsToUpdate.forEach(item => {
+      this.updateSequenceItem(genomeId, {
+        duration: params.duration,
+        pitch: params.pitch, 
+        velocity: params.velocity
+      });
+    });
   }
 
   setSequence(steps) {
@@ -115,9 +137,14 @@ export class SequencingUnit extends BaseUnit {
 
     if (existingIndex >= 0) {
       // Remove item
+      const removedItem = this.activeSequence[existingIndex];
+      
+      // Remove from registry when removing from sequence
+      VoiceParameterRegistry.removeVoice(`seq-${this.id}-${removedItem.genomeId}`);
+      
       this.activeSequence.splice(existingIndex, 1);
     } else {
-      // Add new item
+      // Add new item with original values preserved
       const existingOffset = this.selectedTimestep !== null ? 
         this.selectedTimestep : 
         this.activeSequence.length > 0 ? 
@@ -129,14 +156,31 @@ export class SequencingUnit extends BaseUnit {
         this.selectedTimestep = null;
       }
 
+      // Add to sequence
       this.activeSequence.push({
         ...cellData,
         step: existingOffset,     // Use step for group position
         offset: 0.5,              // Set default offset to 0.5 (neutral position)
         durationScale: 1,
         pitchShift: 0,
-        stretch: 1
+        stretch: 1,
+        // Make sure we keep track of original values
+        originalDuration: cellData.originalDuration || cellData.duration || 4,
+        originalPitch: cellData.originalPitch || cellData.noteDelta || 0,
+        originalVelocity: cellData.originalVelocity || cellData.velocity || 1
       });
+
+      // Register with parameter registry
+      VoiceParameterRegistry.registerVoice(
+        `seq-${this.id}-${cellData.genomeId}`,
+        cellData.genomeId,
+        {
+          duration: cellData.duration || 4,
+          pitch: cellData.noteDelta || 0,
+          velocity: cellData.velocity || 1
+        },
+        `sequence-${this.id}`
+      );
 
       // Start playing if this is the first item added
       if (!this.isPlaying && this.activeSequence.length === 1) {
@@ -217,6 +261,9 @@ export class SequencingUnit extends BaseUnit {
 
   // Remove sequence item
   removeSequenceItem(genomeId) {
+    // Remove from registry
+    VoiceParameterRegistry.removeVoice(`seq-${this.id}-${genomeId}`);
+    
     this.activeSequence = this.activeSequence.filter(item => 
       item.genomeId !== genomeId
     );
@@ -423,6 +470,9 @@ export class SequencingUnit extends BaseUnit {
   }
 
   cleanup() {
+    // Remove parameter listener
+    VoiceParameterRegistry.removeRenderParamListener(this.id.toString());
+    
     this.stop();
     this.activeSequence = [];
     this.audioDataCache.clear();

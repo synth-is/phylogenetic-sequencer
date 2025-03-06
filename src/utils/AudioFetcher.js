@@ -47,6 +47,33 @@ class AudioFetcher {
   static async getAudioData(soundData, renderParams, audioContext, onComplete, onProgress) {
     const wavUrl = this.getWavUrl(soundData, renderParams);
     
+    // Create a custom cache key for this specific parameter combination
+    const cacheKey = `${soundData.genomeId}-${renderParams.duration}_${renderParams.pitch}_${renderParams.velocity}`;
+    
+    // First check if we have this in the local cache
+    if (this.audioBufferCache && this.audioBufferCache[cacheKey]) {
+      console.log(`AudioFetcher: Using cached audio buffer for ${cacheKey}`);
+      const cachedBuffer = this.audioBufferCache[cacheKey];
+      
+      // Check if the buffer is valid (not detached)
+      if (cachedBuffer.length > 0) {
+        // Return the audio buffer via both promise and callback
+        if (onComplete) {
+          onComplete({ 
+            success: true, 
+            audioBuffer: cachedBuffer, 
+            source: 'cache',
+            cacheKey
+          });
+        }
+        return cachedBuffer;
+      }
+      
+      // If we get here, the cached buffer was invalid
+      console.log(`AudioFetcher: Cached buffer for ${cacheKey} was invalid, re-rendering`);
+      delete this.audioBufferCache[cacheKey];
+    }
+    
     // First try to fetch from WAV URL
     try {
       const response = await fetch(wavUrl);
@@ -54,12 +81,17 @@ class AudioFetcher {
         const arrayBuffer = await response.arrayBuffer();
         const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
         
+        // Cache the buffer for future use
+        if (!this.audioBufferCache) this.audioBufferCache = {};
+        this.audioBufferCache[cacheKey] = audioBuffer;
+        
         // Return the audio buffer via both promise and callback
         if (onComplete) {
           onComplete({ 
             success: true, 
             audioBuffer, 
-            source: 'wav' 
+            source: 'wav',
+            cacheKey
           });
         }
         return audioBuffer;
@@ -79,11 +111,16 @@ class AudioFetcher {
             renderParams,
             (result) => {
               if (result.success && result.audioBuffer) {
+                // Cache the buffer for future use
+                if (!this.audioBufferCache) this.audioBufferCache = {};
+                this.audioBufferCache[cacheKey] = result.audioBuffer;
+                
                 if (onComplete) {
                   onComplete({ 
                     success: true, 
                     audioBuffer: result.audioBuffer,
-                    source: 'renderer'
+                    source: 'renderer',
+                    cacheKey
                   });
                 }
                 resolve(result.audioBuffer);
@@ -114,6 +151,24 @@ class AudioFetcher {
         throw renderError;
       }
     }
+  }
+
+  /**
+   * Clear the audio buffer cache
+   */
+  static clearCache() {
+    this.audioBufferCache = {};
+  }
+
+  /**
+   * Get a specific cached audio buffer
+   * @param {string} genomeId - Genome ID 
+   * @param {Object} renderParams - Parameters for rendering (duration, pitch, velocity)
+   * @returns {AudioBuffer|null} - The cached buffer or null if not found
+   */
+  static getCachedBuffer(genomeId, renderParams) {
+    const cacheKey = `${genomeId}-${renderParams.duration}_${renderParams.pitch}_${renderParams.velocity}`;
+    return (this.audioBufferCache && this.audioBufferCache[cacheKey]) || null;
   }
 }
 

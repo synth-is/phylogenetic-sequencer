@@ -1,74 +1,131 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { createContext, useContext, useState, useCallback, useRef, useEffect } from 'react';
 import { TrajectoryUnit } from './units/TrajectoryUnit';
+import { LoopingUnit } from './units/LoopingUnit';
+import { SequencingUnit } from './units/SequencingUnit';
+import { UNIT_TYPES } from './constants';
 
-// Create the context
-const UnitsContext = React.createContext();
+const UnitsContext = createContext();
 
-export const UnitsProvider = ({ children }) => {
-  const [units, setUnits] = useState(new Map());
+export function UnitsProvider({ children }) {
+  const [units, setUnits] = useState([]);
+  const unitsRef = useRef(new Map());
+
+  // Add lastModifiedCellData to track modifications from units
+  const [lastModifiedCellData, setLastModifiedCellData] = useState(null);
   
-  const getOrCreateUnit = useCallback(async (unitId) => {
-    if (!units.has(unitId)) {
-      console.log('Creating new TrajectoryUnit instance:', unitId);
-      const unit = new TrajectoryUnit(unitId);
-      const initialized = await unit.initialize();
-      if (initialized) {
-        console.log('TrajectoryUnit initialized successfully:', unitId);
-        setUnits(prev => new Map(prev).set(unitId, unit));
-        return unit;
-      } else {
-        console.error('Failed to initialize TrajectoryUnit:', unitId);
-        return null;
+  // Add global modified parameters state to persist across hover events
+  const [modifiedParameters, setModifiedParameters] = useState({});
+
+  const handleCellHover = useCallback((cellData) => {
+    // Apply any stored modified parameters to the cellData before passing it on
+    if (cellData && cellData.config && modifiedParameters) {
+      // Deep clone the cellData to avoid mutation issues
+      const modifiedCellData = JSON.parse(JSON.stringify(cellData));
+      
+      // Apply modifications to the config directly
+      if (modifiedParameters.duration !== undefined) {
+        modifiedCellData.config.duration = modifiedParameters.duration;
+        // Also add to the top level for convenience
+        modifiedCellData.duration = modifiedParameters.duration;
       }
-    }
-    return units.get(unitId);
-  }, [units]);
-
-  const handleCellHover = useCallback(async (unitId, cellData) => {
-    console.log('UnitsContext received hover:', { unitId, cellData });
-    const unit = await getOrCreateUnit(unitId);
-    if (unit) {
-      console.log('UnitsContext forwarding to TrajectoryUnit:', {
-        unitId,
-        cellData
+      
+      if (modifiedParameters.noteDelta !== undefined) {
+        modifiedCellData.config.noteDelta = modifiedParameters.noteDelta;
+        // Also add to the top level for convenience
+        modifiedCellData.noteDelta = modifiedParameters.noteDelta;
+      }
+      
+      if (modifiedParameters.velocity !== undefined) {
+        modifiedCellData.config.velocity = modifiedParameters.velocity;
+        // Also add to the top level for convenience
+        modifiedCellData.velocity = modifiedParameters.velocity;
+      }
+      
+      console.log('UnitsContext: Modified cellData before passing to unit', {
+        originalConfig: cellData.config,
+        modifiedConfig: modifiedCellData.config,
+        storedParams: modifiedParameters
       });
-      await unit.handleCellHover(cellData);
+      
+      return modifiedCellData;
     }
-  }, [getOrCreateUnit]);
-
+    
+    // If no modifications, pass through unchanged
+    return cellData;
+  }, [modifiedParameters]);
+  
   const updateUnitConfig = useCallback((unitId, config) => {
-    const unit = units.get(unitId);
-    if (unit) {
-      console.log('Updating unit config:', { unitId, config });
-      unit.updateConfig(config);
+    const unitInstance = unitsRef.current.get(unitId);
+    if (unitInstance) {
+      unitInstance.updateConfig?.(config);
     }
-  }, [units]);
+  }, []);
 
-  // Cleanup effect
-  useEffect(() => {
-    return () => {
-      units.forEach(unit => unit.cleanup());
-    };
-  }, [units]);
+  // Add a callback for units to report modified cell data
+  const handleCellDataModified = useCallback((unitId, originalData, modifiedData) => {
+    console.log('UnitsContext: Cell data modified by unit:', {
+      unitId,
+      original: {
+        duration: originalData?.duration,
+        noteDelta: originalData?.noteDelta,
+        velocity: originalData?.velocity
+      },
+      modified: {
+        duration: modifiedData?.duration,
+        noteDelta: modifiedData?.noteDelta || modifiedData?.pitch,
+        velocity: modifiedData?.velocity
+      }
+    });
+    
+    // Store both original and modified data for components to use
+    setLastModifiedCellData({
+      unitId,
+      originalData,
+      modifiedData
+    });
+    
+    // Update the global modified parameters state
+    setModifiedParameters(prev => ({
+      ...prev,
+      duration: modifiedData.duration,
+      noteDelta: modifiedData.noteDelta || modifiedData.pitch,
+      velocity: modifiedData.velocity
+    }));
+  }, []);
 
-  const value = {
-    units,
-    handleCellHover,
-    updateUnitConfig
-  };
+  // Add a function to update global modified parameters
+  const updateModifiedParameters = useCallback((params) => {
+    console.log('UnitsContext: Updating global modified parameters:', params);
+    setModifiedParameters(prev => ({
+      ...prev,
+      ...params
+    }));
+  }, []);
+
+  // Add a function to reset modified parameters
+  const resetModifiedParameters = useCallback(() => {
+    console.log('UnitsContext: Resetting modified parameters');
+    setModifiedParameters({});
+  }, []);
 
   return (
-    <UnitsContext.Provider value={value}>
+    <UnitsContext.Provider value={{ 
+      units, 
+      setUnits, 
+      unitsRef,
+      handleCellHover,
+      updateUnitConfig,
+      lastModifiedCellData,
+      handleCellDataModified,
+      modifiedParameters,
+      updateModifiedParameters,
+      resetModifiedParameters
+    }}>
       {children}
     </UnitsContext.Provider>
   );
-};
+}
 
-// Custom hook to use units context
-export const useUnits = () => {
-  const context = React.useContext(UnitsContext);
-  if (!context) {
-    throw new Error('useUnits must be used within a UnitsProvider');
-  }
-  return context;
-};
+export function useUnits() {
+  return useContext(UnitsContext);
+}

@@ -40,12 +40,12 @@ export class BaseUnit {
    * @param {Object} soundData - Data about the sound (genomeId, experiment, evoRunId)
    * @param {Object} renderParams - Parameters for rendering (duration, pitch, velocity)
    * @param {Object} options - Additional options (vfsKey prefix, callback on success)
-   * @returns {Promise<AudioBuffer>} - Promise that resolves with the AudioBuffer
+   * @returns {Promise<Object>} - Promise that resolves with audio data result
    */
   async getAudioData(soundData, renderParams, options = {}) {
     const { genomeId } = soundData;
     const vfsKeyPrefix = options.vfsKeyPrefix || `sound-`;
-    const vfsKey = `${vfsKeyPrefix}${genomeId}`;
+    const vfsKey = options.specificVfsKey || `${vfsKeyPrefix}${genomeId}`;
     
     // Mark as rendering
     this.renderingVoices.set(genomeId, renderParams);
@@ -62,7 +62,9 @@ export class BaseUnit {
         context,
         (result) => {
           if (result.success) {
-            console.log(`${this.type}Unit: Audio data received from ${result.source}`, { genomeId });
+            console.log(`${this.type}Unit: Audio data received from ${result.source}, duration: ${result.audioBuffer.duration}`, 
+              { genomeId }
+            );
           } else {
             console.error(`${this.type}Unit: Failed to get audio data`, { error: result.error });
           }
@@ -74,33 +76,21 @@ export class BaseUnit {
         const vfsUpdate = {};
         vfsUpdate[vfsKey] = audioBuffer.getChannelData(0);
         await renderer.updateVirtualFileSystem(vfsUpdate);
-        
-        // If this is a custom render, also update a unique version
-        if (renderParams.duration !== 4 || renderParams.pitch !== 0 || renderParams.velocity !== 1) {
-          const customKey = `${vfsKey}-${renderParams.duration}_${renderParams.pitch}_${renderParams.velocity}`;
-          vfsUpdate[customKey] = audioBuffer.getChannelData(0);
-          await renderer.updateVirtualFileSystem(vfsUpdate);
-        }
-      }
-      
-      // Call the onSuccess callback if provided
-      if (options.onSuccess) {
-        options.onSuccess(vfsKey, audioBuffer);
       }
       
       return {
         vfsKey,
         audioBuffer,
-        metadata: {
+        metadata: audioBuffer ? {
           duration: audioBuffer.duration,
           length: audioBuffer.length,
           sampleRate: audioBuffer.sampleRate,
           numberOfChannels: audioBuffer.numberOfChannels
-        }
+        } : null
       };
     } catch (error) {
       console.error(`${this.type}Unit - Audio fetch error:`, error);
-      return null;
+      return { vfsKey, audioBuffer: null, metadata: null, error };
     } finally {
       // Always clean up rendering state
       this.renderingVoices.delete(genomeId);
@@ -110,15 +100,14 @@ export class BaseUnit {
   
   /**
    * Shared method to handle rendering a sound with specific parameters
+   * This is the main public API used by unit classes for audio rendering
    * @param {Object} soundData - Data about the sound (genomeId, experiment, evoRunId)
    * @param {Object} renderParams - Parameters for rendering (duration, pitch, velocity)
    * @param {Object} options - Additional options (vfsKey prefix, callback on success)
-   * @returns {Promise} - Promise that resolves when render completes
+   * @returns {Promise<Object>} - Promise that resolves when render completes
    */
   async renderSound(soundData, renderParams, options = {}) {
     const { genomeId } = soundData;
-    const vfsKeyPrefix = options.vfsKeyPrefix || `sound-`;
-    const vfsKey = `${vfsKeyPrefix}${genomeId}`;
     
     console.log(`${this.type}Unit - Rendering sound:`, {
       soundData,
@@ -126,30 +115,32 @@ export class BaseUnit {
       options
     });
     
-    // Mark as rendering
-    this.renderingVoices.set(genomeId, renderParams);
-    this.notifyRenderStateChange();
+    // Use getAudioData for consistent audio data loading flow
+    const result = await this.getAudioData(soundData, renderParams, options);
     
-    try {
-      // Use AudioFetcher to get the audio data
-      const result = await this.getAudioData(soundData, renderParams, {
-        ...options,
-        vfsKeyPrefix
-      });
+    if (result.audioBuffer) {
+      // Cache the metadata for this specific VFS key
+      this.audioDataCache?.set(result.vfsKey, result.metadata);
       
-      if (options.onSuccess && result) {
+      // Call the onSuccess callback if provided
+      if (options.onSuccess) {
         options.onSuccess(result.vfsKey, result.audioBuffer);
       }
-      
-      return result;
-    } catch (error) {
-      console.error(`${this.type}Unit - Render error:`, error);
-      return null;
-    } finally {
-      // Always clean up rendering state
-      this.renderingVoices.delete(genomeId);
-      this.notifyRenderStateChange();
     }
+    
+    return result;
+  }
+
+  /**
+   * Method to update currently playing voices with new render parameters
+   * Child classes should override this method with their specific implementation
+   * @param {string} genomeId - Genome ID to update
+   * @param {Object} renderParams - New render parameters (duration, pitch, velocity)
+   * @returns {Promise<boolean>} - True if successful
+   */
+  async updatePlayingVoice(genomeId, renderParams) {
+    console.log(`${this.type}Unit: Base updatePlayingVoice called, but no implementation exists. Override in child class.`);
+    return false;
   }
 
   /**
@@ -172,6 +163,7 @@ export class BaseUnit {
    * Notify all registered callbacks that render state has changed
    */
   notifyRenderStateChange() {
+    // Pass the renderingVoices map to ensure consistent callback signature
     this.renderCallbacks.forEach(callback => callback(this.renderingVoices));
   }
   

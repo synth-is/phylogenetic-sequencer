@@ -1,7 +1,7 @@
 import {el} from '@elemaudio/core';
 import { UNIT_TYPES } from '../constants';
 import { BaseUnit } from './BaseUnit';
-import SoundRenderer from '../utils/SoundRenderer';
+import VoiceParameterRegistry from '../utils/VoiceParameterRegistry';
 
 export class LoopingUnit extends BaseUnit {
   constructor(id) {
@@ -43,11 +43,25 @@ export class LoopingUnit extends BaseUnit {
         throw new Error('AudioEngine not properly initialized');
       }
 
+      // Register for parameter updates
+      VoiceParameterRegistry.registerRenderParamListener(this.id.toString(), 
+        (voiceId, genomeId, params) => this.handleVoiceParamUpdate(voiceId, genomeId, params));
+
       console.log(`LoopingUnit ${this.id} initialized successfully`);
       return true;
     } catch (err) {
       console.error(`LoopingUnit ${this.id} initialization error:`, err);
       return false;
+    }
+  }
+
+  // Handle parameter updates for voices
+  handleVoiceParamUpdate(voiceId, genomeId, params) {
+    console.log(`LoopingUnit ${this.id}: Voice param update for ${voiceId}`, params);
+    
+    // For looping voices, directly update the voice parameters
+    if (this.loopingVoices.has(genomeId)) {
+      this.updateLoopingVoice(genomeId, params);
     }
   }
 
@@ -100,7 +114,7 @@ export class LoopingUnit extends BaseUnit {
             pitch: cellData.noteDelta || 0,
             velocity: cellData.velocity || 1
           };
-          
+          console.log('Rendering with params:', renderParams, ", cellData:", cellData);
           // Use the unified BaseUnit renderSound method
           const result = await this.renderSound(
             {
@@ -145,8 +159,25 @@ export class LoopingUnit extends BaseUnit {
           // Add render parameters
           duration: cellData.duration || 4,
           pitch: cellData.noteDelta || 0,
-          velocity: cellData.velocity || 1
+          velocity: cellData.velocity || 1,
+          // Store original values
+          originalDuration: cellData.originalDuration || cellData.duration || 4,
+          originalPitch: cellData.originalPitch || cellData.noteDelta || 0,
+          originalVelocity: cellData.originalVelocity || cellData.velocity || 1
         });
+
+        // Register with parameter registry
+        VoiceParameterRegistry.registerVoice(
+          `looping-${genomeId}-${this.id}`, 
+          genomeId, 
+          {
+            duration: cellData.duration || 4, 
+            pitch: cellData.noteDelta || 0,
+            velocity: cellData.velocity || 1,
+            playbackRate: this.playbackRate
+          }, 
+          `looping-${this.id}`
+        );
 
         this.updateVoiceMix();
         cellData.config?.onLoopStateChanged?.(true);
@@ -199,6 +230,9 @@ export class LoopingUnit extends BaseUnit {
 
   stopLoopingVoice(genomeId) {
     if (this.loopingVoices.has(genomeId)) {
+      // Remove from registry
+      VoiceParameterRegistry.removeVoice(`looping-${genomeId}-${this.id}`);
+
       this.loopingVoices.delete(genomeId);
       
       // If we stopped the master loop, find new master
@@ -268,6 +302,9 @@ export class LoopingUnit extends BaseUnit {
   }
 
   cleanup() {
+    // Remove parameter listener
+    VoiceParameterRegistry.removeRenderParamListener(this.id.toString());
+
     this.audioDataCache.clear();
     this.audioBufferSources.clear();
     this.loopingVoices.clear();

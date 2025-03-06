@@ -7,34 +7,80 @@ import { LoopingUnit } from '../units/LoopingUnit';
 import { CellDataFormatter } from '../utils/CellDataFormatter';
 import { useUnits } from '../UnitsContext';
 
-// Update Slider component to support centered visualization
-const Slider = ({ label, value, onChange, onMouseUp, min = 0, max = 1, step = 0.01, centered = false }) => (
-  <div className="space-y-1">
-    <div className="flex justify-between text-xs">
-      <span className="text-gray-300">{label}</span>
-      <span className="text-gray-400">
-        {centered ? ((value - 0.5) * 2).toFixed(2) : value.toFixed(2)}
-      </span>
+// Enhanced Slider component to show default value markers
+const Slider = ({ 
+  label, 
+  value, 
+  onChange,
+  onMouseUp, 
+  min = 0, 
+  max = 1, 
+  step = 0.01, 
+  centered = false,
+  defaultValue = null // Add defaultValue prop
+}) => {
+  // Keep track of dragging state
+  const [isDragging, setIsDragging] = useState(false);
+
+  // Event handlers
+  const handleChange = (e) => {
+    const newValue = parseFloat(e.target.value);
+    onChange(newValue);
+  };
+
+  const handleMouseDown = () => {
+    setIsDragging(true);
+  };
+
+  const handleMouseUp = () => {
+    setIsDragging(false);
+    if (onMouseUp) onMouseUp();
+  };
+
+  return (
+    <div className="space-y-1">
+      <div className="flex justify-between text-xs">
+        <span className="text-gray-300">{label}</span>
+        <span className="text-gray-400">
+          {centered ? ((value - 0.5) * 2).toFixed(2) : value.toFixed(2)}
+        </span>
+      </div>
+      <div className="relative">
+        <input
+          type="range"
+          min={min}
+          max={max}
+          step={step}
+          value={value || 0}
+          onChange={handleChange}
+          onMouseDown={handleMouseDown}
+          onMouseUp={handleMouseUp}
+          onTouchStart={handleMouseDown}
+          onTouchEnd={handleMouseUp}
+          className={`w-full h-1.5 rounded-sm appearance-none bg-gray-700 
+            [&::-webkit-slider-thumb]:w-2.5 [&::-webkit-slider-thumb]:h-2.5 
+            [&::-webkit-slider-thumb]:rounded-sm [&::-webkit-slider-thumb]:bg-blue-500 
+            [&::-webkit-slider-thumb]:appearance-none
+            ${isDragging ? 'ring-1 ring-blue-500' : ''}`}
+          style={centered ? {
+            background: `linear-gradient(to right, #374151 50%, #374151 50%)`
+          } : {}}
+        />
+        {/* Default value marker */}
+        {defaultValue !== null && (
+          <div 
+            className="absolute top-0 w-0.5 h-3 bg-yellow-400"
+            style={{
+              left: `${((defaultValue - min) / (max - min)) * 100}%`,
+              transform: 'translateX(-50%)',
+              pointerEvents: 'none'
+            }}
+          />
+        )}
+      </div>
     </div>
-    <input
-      type="range"
-      min={min}
-      max={max}
-      step={step}
-      value={value || 0}
-      onChange={(e) => onChange(parseFloat(e.target.value))}
-      onMouseUp={onMouseUp}
-      onTouchEnd={onMouseUp}
-      className={`w-full h-1.5 rounded-sm appearance-none bg-gray-700 
-        [&::-webkit-slider-thumb]:w-2.5 [&::-webkit-slider-thumb]:h-2.5 
-        [&::-webkit-slider-thumb]:rounded-sm [&::-webkit-slider-thumb]:bg-blue-500 
-        [&::-webkit-slider-thumb]:appearance-none`}
-      style={centered ? {
-        background: `linear-gradient(to right, #374151 50%, #374151 50%)`
-      } : {}}
-    />
-  </div>
-);
+  );
+};
 
 const UnitTypeSelector = ({ onSelect, onClose }) => (
   <div className="fixed bottom-16 left-4 right-4 mx-2 bg-gray-800 rounded-sm shadow-lg overflow-hidden z-50">
@@ -220,6 +266,9 @@ export default function UnitsPanel({
   // Add state to track trajectory UIs independent of hover events
   const [trajectoryStates, setTrajectoryStates] = useState(new Map());
 
+  // Add state to track rendering states
+  const [renderingStates, setRenderingStates] = useState(new Map());
+
   // Force UI updates for trajectory controls
   const forceTrajectoryUpdate = (unitId) => {
     const unit = unitsRef.current.get(unitId);
@@ -286,143 +335,411 @@ const ParameterSection = ({ title, children }) => (
   </div>
 );
 
-// Add new shared parameter components
-const ModifyParameters = ({ onChange, values, showPosition = true, unitType }) => (
-  <ParameterSection title="Modify">
-    {showPosition && (
-      <Slider 
-        label="Position"
-        min={0}
-        max={1}
-        step={0.01}
-        value={values.offset || 0.5}
-        onChange={val => onChange('offset', val)}
-        centered={true}
-      />
-    )}
+// Update the ModifyParameters component similarly with debouncing
+const ModifyParameters = ({ onChange, values, showPosition = true, unitType }) => {
+  // Add state for tracking sliders being dragged
+  const [isDragging, setIsDragging] = useState(false);
+  // Track the current parameter values while dragging
+  const [currentValues, setCurrentValues] = useState({...values});
+  // Keep previous values for comparison
+  const prevValuesRef = useRef({...values});
+
+  // Update currentValues when external values change (but not during drag)
+  useEffect(() => {
+    if (!isDragging) {
+      setCurrentValues({...values});
+      prevValuesRef.current = {...values};
+    }
+  }, [values, isDragging]);
+
+  // Function to handle parameter changes during dragging
+  const handleParamChange = (param, value) => {
+    // Update the local state immediately for UI feedback only
+    setCurrentValues(prev => ({...prev, [param]: value}));
     
-    {unitType === UNIT_TYPES.SEQUENCING ? (
-      // For SequencingUnit, use shift parameter
-      <Slider 
-        label="Shift"
-        min={-24}
-        max={24}
-        step={1}
-        value={values.shift || values.pitchShift || 0}
-        onChange={val => onChange('shift', val)}
-        centered={true}
-      />
-    ) : (
-      // For TrajectoryUnit and LoopingUnit, use playbackRate parameter
-      <Slider 
-        label="Playback Rate"
-        min={0.25}
-        max={4}
-        step={0.25}
-        value={values.playbackRate || 1}
-        onChange={val => onChange('playbackRate', val)}
-      />
-    )}
+    // Mark as dragging
+    setIsDragging(true);
+  };
+  
+  // Function for when drag ends
+  const handleDragEnd = (param) => {
+    // Get the final value for this parameter
+    const value = currentValues[param];
     
-    {showPosition && (
-      <>
+    // End dragging state
+    setIsDragging(false);
+    
+    // Only apply the final value if it's different from the previous value
+    if (value !== prevValuesRef.current[param]) {
+      console.log(`Applying final modify parameter change (${param}): ${prevValuesRef.current[param]} -> ${value}`);
+      onChange(param, value);
+      prevValuesRef.current[param] = value;
+    }
+  };
+
+  return (
+    <ParameterSection title="Modify">
+      {showPosition && (
         <Slider 
-          label="Start Offset"
+          label="Position"
           min={0}
           max={1}
           step={0.01}
-          value={values.startOffset || 0}
-          onChange={val => onChange('startOffset', val)}
+          value={currentValues.offset || 0.5}
+          onChange={val => handleParamChange('offset', val)}
+          onMouseUp={() => handleDragEnd('offset')}
+          centered={true}
+        />
+      )}
+      
+      {unitType === UNIT_TYPES.SEQUENCING ? (
+        // For SequencingUnit, use shift parameter
+        <Slider 
+          label="Shift"
+          min={-24}
+          max={24}
+          step={1}
+          value={currentValues.shift || currentValues.pitchShift || 0}
+          onChange={val => handleParamChange('shift', val)}
+          onMouseUp={() => handleDragEnd('shift')}
+          centered={true}
+        />
+      ) : (
+        // For TrajectoryUnit and LoopingUnit, use playbackRate parameter
+        <Slider 
+          label="Playback Rate"
+          min={0.25}
+          max={4}
+          step={0.25}
+          value={currentValues.playbackRate || 1}
+          onChange={val => handleParamChange('playbackRate', val)}
+          onMouseUp={() => handleDragEnd('playbackRate')}
+        />
+      )}
+      
+      {showPosition && (
+        <>
+          <Slider 
+            label="Start Offset"
+            min={0}
+            max={1}
+            step={0.01}
+            value={currentValues.startOffset || 0}
+            onChange={val => handleParamChange('startOffset', val)}
+            onMouseUp={() => handleDragEnd('startOffset')}
+          />
+          
+          <Slider 
+            label="Stop Offset"
+            min={0}
+            max={1}
+            step={0.01}
+            value={currentValues.stopOffset || 0}
+            onChange={val => handleParamChange('stopOffset', val)}
+            onMouseUp={() => handleDragEnd('stopOffset')}
+          />
+        </>
+      )}
+    </ParameterSection>
+  );
+};
+
+// Update the RenderParameters component to handle real-time updates better
+const RenderParameters = ({ 
+  onChange, 
+  values, 
+  isRendering = false, 
+  defaultValues = null,
+  unitInstance = null,
+  genomeId = null
+}) => {
+  // Add state for tracking sliders being dragged
+  const [isDragging, setIsDragging] = useState(false);
+  // Track the current parameter values while dragging
+  const [currentValues, setCurrentValues] = useState({...values});
+  // Use a ref to store the debounce timer
+  const debounceTimerRef = useRef(null);
+  // Keep previous values for comparison
+  const prevValuesRef = useRef({...values});
+
+  // Update currentValues when external values change (but not during drag)
+  useEffect(() => {
+    if (!isDragging) {
+      setCurrentValues({...values});
+      prevValuesRef.current = {...values};
+    }
+  }, [values, isDragging]);
+
+  // Function to handle parameter changes during dragging
+  const handleParamChange = (param, value) => {
+    // Update the local state immediately for UI feedback only
+    setCurrentValues(prev => ({...prev, [param]: value}));
+    
+    // Mark as dragging
+    setIsDragging(true);
+    
+    // During dragging, we only update the UI, NOT the registry or trigger any renders
+    // This ensures we don't fire network requests during dragging
+  };
+  
+  // Function for when drag ends
+  const handleDragEnd = (param) => {
+    // Clear any existing timer
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = null;
+    }
+
+    // Get the final value for this parameter
+    const value = currentValues[param];
+    
+    // End dragging state
+    setIsDragging(false);
+    
+    // Only apply the final value if it's different from the previous value
+    if (value !== prevValuesRef.current[param]) {
+      console.log(`Applying final render parameter change (${param}): ${prevValuesRef.current[param]} -> ${value}`);
+      
+      // Update the registry with the final value
+      if (genomeId) {
+        try {
+          // Import dynamically to avoid circular dependencies
+          import('../utils/VoiceParameterRegistry').then(module => {
+            const VoiceParameterRegistry = module.default;
+            
+            // Update the registry with the final parameter value
+            VoiceParameterRegistry.updateParameters(
+              genomeId, 
+              { [param]: value }
+            );
+          });
+        } catch (err) {
+          console.error('Error updating voice parameters:', err);
+        }
+      }
+      
+      // Call onChange handler for UI updates
+      onChange(param, value);
+      
+      // For parameters requiring render, call the unit's updatePlayingVoice method
+      if (param === 'duration' || param === 'pitch' || param === 'velocity') {
+        if (unitInstance && genomeId && !isRendering) {
+          try {
+            // Use updatePlayingVoice for single voice parameters
+            // This will trigger the actual render ONLY on drag end
+            unitInstance.updatePlayingVoice(genomeId, { [param]: value });
+          } catch (err) {
+            console.error('Error updating playing voice:', err);
+          }
+        }
+      }
+      
+      // Update the previous value reference
+      prevValuesRef.current[param] = value;
+    } else {
+      console.log(`Parameter ${param} unchanged, skipping update`);
+    }
+  };
+  
+  // Ensure we clean up timers
+  useEffect(() => {
+    return () => {
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+      }
+    };
+  }, []);
+
+  return (
+    <ParameterSection title="Render">
+      <div className="relative">
+        {isRendering && <RenderingSpinner />}
+        <Slider 
+          label="Duration"
+          min={0.1}
+          max={60}
+          step={0.1}
+          value={currentValues.duration || 1}
+          onChange={val => handleParamChange('duration', val)} 
+          onMouseUp={() => handleDragEnd('duration')}
+          defaultValue={defaultValues?.duration}
         />
         
         <Slider 
-          label="Stop Offset"
+          label="Pitch"
+          min={-24}
+          max={24}
+          step={1}
+          value={currentValues.pitch === undefined ? 0 : currentValues.pitch}
+          onChange={val => handleParamChange('pitch', val)}
+          onMouseUp={() => handleDragEnd('pitch')}
+          centered={true}
+          defaultValue={defaultValues?.pitch}
+        />
+        
+        <Slider 
+          label="Velocity"
           min={0}
           max={1}
           step={0.01}
-          value={values.stopOffset || 0}
-          onChange={val => onChange('stopOffset', val)}
+          value={currentValues.velocity || 1}
+          onChange={val => handleParamChange('velocity', val)}
+          onMouseUp={() => handleDragEnd('velocity')}
+          defaultValue={defaultValues?.velocity}
         />
-      </>
-    )}
-  </ParameterSection>
-);
+      </div>
+    </ParameterSection>
+  );
+};
 
-// Update the RenderParameters component to ensure pitch default is exactly 0
-const RenderParameters = ({ onChange, values, isRendering = false }) => (
-  <ParameterSection title="Render">
-    <div className="relative">
-      {isRendering && <RenderingSpinner />}
-      <Slider 
-        label="Duration"
-        min={0.1}
-        max={4}
-        step={0.1}
-        value={values.duration || 1}
-        onChange={val => onChange('duration', val)}
-      />
-      
-      <Slider 
-        label="Pitch"
-        min={-24}
-        max={24}
-        step={1}
-        // Fix the default value handling to ensure it properly defaults to 0
-        // Note the strict comparison to ensure undefined values become 0
-        value={values.pitch === undefined ? 0 : values.pitch}
-        onChange={val => onChange('pitch', val)}
-        centered={true}
-      />
-      
-      <Slider 
-        label="Velocity"
-        min={0}
-        max={1}
-        step={0.01}
-        value={values.velocity || 1}
-        onChange={val => onChange('velocity', val)}
-      />
-    </div>
-  </ParameterSection>
-);
-
-// Update TrajectoryEventParams to support rendering status
-const TrajectoryEventParams = ({ event, onUpdate, isRendering = false }) => {
+// Update TrajectoryEventParams to properly reflect event values
+const TrajectoryEventParams = ({ 
+  event, 
+  onUpdate, 
+  isRendering = false, 
+  trajectoryUnit = null,
+  trajectoryId = null,
+  eventIndex = null 
+}) => {
+  // FIXED: Initialize with the correct values from event
   const [dragValues, setDragValues] = useState({
-    offset: event.offset,
+    offset: event.offset || 0.5,
     playbackRate: event.playbackRate || 1,
     startOffset: event.startOffset || 0,
     stopOffset: event.stopOffset || 0,
-    duration: event.duration || 1,
-    pitch: event.pitch || 0,
-    velocity: event.velocity || 1
+    // IMPORTANT: Use correct render parameter values, checking multiple locations
+    duration: event.duration || event.renderParams?.duration || 
+              event.cellData?.duration || 4,
+    pitch: event.pitch || event.renderParams?.pitch || 
+           event.cellData?.noteDelta || event.cellData?.pitch || 0,
+    velocity: event.velocity || event.renderParams?.velocity || 
+              event.cellData?.velocity || 1
   });
+  
+  // Store original values from the cell data
+  const originalValues = useRef({
+    duration: event.cellData?.originalDuration || 
+              event.cellData?.duration || 
+              event.duration || 4,
+    pitch: event.cellData?.originalPitch || 
+           event.cellData?.noteDelta || 
+           event.cellData?.pitch || 
+           event.pitch || 0,
+    velocity: event.cellData?.originalVelocity || 
+              event.cellData?.velocity || 
+              event.velocity || 1
+  });
+  
+  // Maintain context ID for registry updates
+  const contextId = `trajectory-${trajectoryId}-event-${eventIndex}`;
 
-  const handleParamChange = (param, value) => {
+  // FIXED: Update dragValues when event changes with improved fallback chain
+  useEffect(() => {
+    console.log('TrajectoryEventParams: Event updated, refreshing values', {
+      eventId: event.cellData?.genomeId,
+      duration: event.duration,
+      renderParamsDuration: event.renderParams?.duration,
+      cellDataDuration: event.cellData?.duration,
+    });
+    
+    setDragValues({
+      offset: event.offset || 0.5,
+      playbackRate: event.playbackRate || 1,
+      startOffset: event.startOffset || 0,
+      stopOffset: event.stopOffset || 0,
+      // Use a multi-level fallback chain to get the most accurate values
+      duration: event.duration || 
+                event.renderParams?.duration || 
+                event.cellData?.duration || 4,
+      pitch: event.pitch || 
+             event.renderParams?.pitch || 
+             event.cellData?.noteDelta || 
+             event.cellData?.pitch || 0,
+      velocity: event.velocity || 
+                event.renderParams?.velocity || 
+                event.cellData?.velocity || 1
+    });
+    
+    // Also update original values if needed
+    originalValues.current = {
+      duration: event.cellData?.originalDuration || 
+                event.cellData?.duration || 
+                event.duration || 4,
+      pitch: event.cellData?.originalPitch || 
+             event.cellData?.noteDelta || 
+             event.cellData?.pitch || 
+             event.pitch || 0,
+      velocity: event.cellData?.originalVelocity || 
+                event.cellData?.velocity || 
+                event.velocity || 1
+    };
+  }, [
+    event, 
+    event.duration, 
+    event.pitch, 
+    event.velocity, 
+    event.renderParams?.duration,
+    event.renderParams?.pitch,
+    event.renderParams?.velocity
+  ]);
+
+  // Function for handling render parameter changes
+  const handleRenderParamChange = (param, value) => {
+    // Update local state immediately for UI feedback
     setDragValues(prev => ({ ...prev, [param]: value }));
+    
+    // If we have VoiceParameterRegistry, update it directly for real-time changes
+    if (event.cellData?.genomeId) {
+      // Import dynamically to avoid circular dependencies
+      import('../utils/VoiceParameterRegistry').then(module => {
+        const VoiceParameterRegistry = module.default;
+        
+        // Update the registry with the new parameter value
+        VoiceParameterRegistry.updateParameters(
+          event.cellData.genomeId, 
+          { [param]: value },
+          contextId
+        );
+      });
+    }
   };
 
-  const handleDragEnd = (param, value) => {
+  // Function for handling parameter changes with less frequent updates
+  const handleModifyChange = (param, value) => {
+    // Update local state immediately for UI feedback
+    setDragValues(prev => ({ ...prev, [param]: value }));
+    
+    // Send update to trajectory
     onUpdate({ [param]: value });
+  };
+  
+  // Function for when drag ends on a render param
+  const handleRenderParamEnd = (param) => {
+    // FIXED: Add renderNow flag to signal that this is a final value
+    const updates = { 
+      [param]: dragValues[param],
+      renderNow: true
+    };
+    
+    // Send final update
+    onUpdate(updates);
   };
 
   return (
     <div className="pt-2 space-y-2">
       <ModifyParameters 
         values={dragValues}
-        onChange={(param, value) => {
-          handleParamChange(param, value);
-          handleDragEnd(param, value);
-        }}
+        onChange={(param, value) => handleModifyChange(param, value)}
         unitType={UNIT_TYPES.TRAJECTORY}
       />
       <RenderParameters 
         values={dragValues}
-        onChange={(param, value) => {
-          handleParamChange(param, value);
-          handleDragEnd(param, value);
-        }}
+        onChange={(param, value) => handleRenderParamChange(param, value)}
+        onMouseUp={(param) => handleRenderParamEnd(param)}
         isRendering={isRendering}
+        defaultValues={originalValues.current}
+        unitInstance={trajectoryUnit}
+        genomeId={event.cellData?.genomeId}
       />
     </div>
   );
@@ -506,6 +823,13 @@ const TrajectoryEventParams = ({ event, onUpdate, isRendering = false }) => {
                     forceTrajectoryUpdate(unit.id);
                   }}
                   isRendering={isVoiceRendering(unit.id, trajectoryUnit.lastHoveredSound.genomeId)}
+                  defaultValues={{
+                    duration: trajectoryUnit.lastHoveredSound.originalDuration || trajectoryUnit.lastHoveredSound.duration,
+                    pitch: trajectoryUnit.lastHoveredSound.originalPitch || trajectoryUnit.lastHoveredSound.pitch,
+                    velocity: trajectoryUnit.lastHoveredSound.originalVelocity || trajectoryUnit.lastHoveredSound.velocity
+                  }}
+                  unitInstance={trajectoryUnit}
+                  genomeId={trajectoryUnit.lastHoveredSound.genomeId}
                 />
               </div>
             </div>
@@ -587,6 +911,9 @@ const TrajectoryEventParams = ({ event, onUpdate, isRendering = false }) => {
                             forceTrajectoryUpdate(unit.id);
                           }}
                           isRendering={isVoiceRendering(unit.id, event.cellData.genomeId)}
+                          trajectoryUnit={trajectoryUnit}
+                          trajectoryId={trajectoryId}
+                          eventIndex={index}
                         />
                       </details>
                     </div>
@@ -727,6 +1054,13 @@ const renderLoopingControls = (unit) => {
                       forceTrajectoryUpdate(unit.id);
                     }}
                     isRendering={isVoiceRendering(unit.id, voice.id)}
+                    defaultValues={{
+                      duration: voice.originalDuration || voice.duration,
+                      pitch: voice.originalPitch || voice.pitch,
+                      velocity: voice.originalVelocity || voice.velocity
+                    }}
+                    unitInstance={loopingUnit}
+                    genomeId={voice.id}
                   />
                 </div>
               </div>
@@ -838,6 +1172,13 @@ const renderLoopingControls = (unit) => {
                         forceSequenceUpdate(unit.id);
                       }}
                       isRendering={isVoiceRendering(unit.id, item.genomeId)}
+                      defaultValues={{
+                        duration: item.originalDuration || item.duration,
+                        pitch: item.originalPitch || item.pitch,
+                        velocity: item.originalVelocity || item.velocity
+                      }}
+                      unitInstance={sequencingUnit}
+                      genomeId={item.genomeId}
                     />
                   </div>
                 </details>
@@ -958,34 +1299,39 @@ const renderLoopingControls = (unit) => {
   }, [units]);
 
   // Add state to track rendering status for voices
-  const [renderingStates, setRenderingStates] = useState(new Map());
-  
+  const handleRenderStateChange = (unitId) => (renderingVoices) => {
+    // Add null check to prevent errors when renderingVoices is undefined
+    if (!renderingVoices) {
+      console.warn(`Received undefined renderingVoices for unit ${unitId}`);
+      // Clear rendering state for this unit if we got undefined
+      setRenderingStates(prev => {
+        const newStates = new Map(prev);
+        newStates.set(unitId, new Set());
+        return newStates;
+      });
+      return;
+    }
+    
+    setRenderingStates(prev => {
+      const newStates = new Map(prev);
+      // Convert the renderingVoices Map to a Set of genomeIds for easier lookup
+      const genomeIds = new Set();
+      renderingVoices.forEach((_, genomeId) => {
+        genomeIds.add(genomeId);
+      });
+      newStates.set(unitId, genomeIds);
+      return newStates;
+    });
+    
+    // Log rendering state changes
+    console.log(`Render state updated for unit ${unitId}:`, {
+      renderingIds: Array.from(renderingVoices.keys()),
+      unitType: unitsRef.current.get(unitId)?.type
+    });
+  };
+
   // Add useEffect to setup render state listeners
   useEffect(() => {
-    const handleRenderStateChange = (unitId) => () => {
-      const unit = unitsRef.current.get(unitId);
-      
-      // Check for renderingVoices (TrajectoryUnit, LoopingUnit) or renderingItems (SequencingUnit)
-      let renderingIds = [];
-      if (unit?.renderingVoices) {
-        renderingIds = Array.from(unit.renderingVoices.keys());
-      } else if (unit?.renderingItems) {
-        renderingIds = Array.from(unit.renderingItems.keys());
-      }
-      
-      console.log(`Render state updated for unit ${unitId}:`, { 
-        renderingIds,
-        unitType: unit?.type
-      });
-      
-      // Update render state
-      setRenderingStates(prev => {
-        const newState = new Map(prev);
-        newState.set(unitId, new Set(renderingIds));
-        return newState;
-      });
-    };
-
     const renderListeners = new Map();
 
     // Set up render state listeners for all unit types
