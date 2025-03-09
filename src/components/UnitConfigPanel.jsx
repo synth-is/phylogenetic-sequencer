@@ -484,6 +484,14 @@ export default function UnitConfigPanel({ unit, units, onClose, onUpdateUnit, tr
                     step={0.01}
                   />
                   <Slider 
+                    label="Mutate Relative Position" 
+                    value={unit.mutatePosition || 0} 
+                    onChange={val => handleValueChange('mutatePosition', val)} 
+                    min={0}
+                    max={1}
+                    step={0.01}
+                  />
+                  <Slider 
                     label="Prob. New Tree" 
                     value={unit.probNewTree || 0} 
                     onChange={val => handleValueChange('probNewTree', val)} 

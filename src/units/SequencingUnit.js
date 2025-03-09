@@ -31,6 +31,7 @@ export class SequencingUnit extends BaseUnit {
     this.shrink = 0;
     this.mutate = 0;
     this.probNewTree = 0;
+    this.mutatePosition = 0; // Add new parameter for position offset mutation
 
     // Evolution state tracking
     this.evolutionActive = false;
@@ -498,6 +499,7 @@ export class SequencingUnit extends BaseUnit {
       (config.grow !== undefined && config.grow !== this.grow) ||
       (config.shrink !== undefined && config.shrink !== this.shrink) ||
       (config.mutate !== undefined && config.mutate !== this.mutate) ||
+      (config.mutatePosition !== undefined && config.mutatePosition !== this.mutatePosition) ||
       (config.probNewTree !== undefined && config.probNewTree !== this.probNewTree);
     
     // Apply all config changes first
@@ -517,7 +519,7 @@ export class SequencingUnit extends BaseUnit {
    * Check and start the evolution process if any parameters are set
    */
   checkAndStartEvolution() {
-    const shouldEvolve = this.grow > 0 || this.shrink > 0 || this.mutate > 0;
+    const shouldEvolve = this.grow > 0 || this.shrink > 0 || this.mutate > 0 || this.mutatePosition > 0;
     
     // Start evolution if it's not already running and parameters are set
     if (shouldEvolve && !this.evolutionActive) {
@@ -527,6 +529,7 @@ export class SequencingUnit extends BaseUnit {
         grow: this.grow,
         shrink: this.shrink,
         mutate: this.mutate,
+        mutatePosition: this.mutatePosition,
         probNewTree: this.probNewTree,
         sequenceLength: this.activeSequence.length
       });
@@ -584,6 +587,7 @@ export class SequencingUnit extends BaseUnit {
       grow: this.grow,
       shrink: this.shrink,
       mutate: this.mutate,
+      mutatePosition: this.mutatePosition,
       probNewTree: this.probNewTree
     });
 
@@ -593,7 +597,9 @@ export class SequencingUnit extends BaseUnit {
       sequenceLength: this.activeSequence.length,
       itemsById: this.activeSequence.map(item => ({
         genomeId: item.genomeId,
-        treeIndex: item.treeInfo?.treeIndex
+        treeIndex: item.treeInfo?.treeIndex,
+        step: item.step || 0,
+        offset: item.offset || 0.5
       }))
     };
     
@@ -611,9 +617,14 @@ export class SequencingUnit extends BaseUnit {
       console.log('Sequence is empty, forcing grow operation');
       this.performGrow(true); // Pass true to force growth regardless of probability
     } else {
-      // Normal case: Apply operations in a more natural order - first shrink, then mutate, then grow
+      // Normal case: Apply operations in a more natural order
       
-      // First shrink - this can potentially empty the sequence
+      // First perform position mutations - this only affects existing voices
+      if (this.mutatePosition > 0 && this.activeSequence.length > 0) {
+        this.performPositionMutation();
+      }
+      
+      // Then shrink - this can potentially empty the sequence
       if (this.shrink > 0) {
         this.performShrink(); 
       }
@@ -635,9 +646,30 @@ export class SequencingUnit extends BaseUnit {
       sequenceLength: this.activeSequence.length,
       itemsById: this.activeSequence.map(item => ({
         genomeId: item.genomeId,
-        treeIndex: item.treeInfo?.treeIndex
+        treeIndex: item.treeInfo?.treeIndex,
+        step: item.step || 0,
+        offset: item.offset || 0.5
       }))
     };
+    
+    // Analyze position changes
+    const positionChanges = [];
+    if (beforeState.itemsById.length > 0 && afterState.itemsById.length > 0) {
+      beforeState.itemsById.forEach((beforeItem) => {
+        const afterItem = afterState.itemsById.find(i => i.genomeId === beforeItem.genomeId);
+        if (afterItem && 
+            (beforeItem.step !== afterItem.step || 
+             Math.abs(beforeItem.offset - afterItem.offset) > 0.001)) {
+          positionChanges.push({
+            genomeId: beforeItem.genomeId,
+            fromStep: beforeItem.step,
+            toStep: afterItem.step,
+            fromOffset: beforeItem.offset,
+            toOffset: afterItem.offset
+          });
+        }
+      });
+    }
     
     this.evolutionHistory.push({
       before: beforeState,
@@ -645,15 +677,63 @@ export class SequencingUnit extends BaseUnit {
       changes: {
         added: afterState.sequenceLength - beforeState.sequenceLength,
         removed: Math.max(0, beforeState.sequenceLength - afterState.sequenceLength),
-        unchanged: Math.min(beforeState.sequenceLength, afterState.sequenceLength)
+        unchanged: Math.min(beforeState.sequenceLength, afterState.sequenceLength),
+        positionChanges // Track position changes
       }
     });
+    
+    // Log position changes if any occurred
+    if (positionChanges.length > 0) {
+      console.log('Position mutations occurred:', positionChanges);
+    }
     
     // Update the UI and audio
     this.updateSequencer();
     
     // Schedule next evolution
     this.startEvolution();
+  }
+
+  /**
+   * Perform position mutation for sequence items
+   */
+  performPositionMutation() {
+    if (this.mutatePosition <= 0 || this.activeSequence.length <= 1) return;
+    
+    console.log('Performing position mutation with probability:', this.mutatePosition);
+    
+    // Track if any mutations occurred
+    let mutationOccurred = false;
+    
+    // For each item, consider mutating its position
+    this.activeSequence.forEach(item => {
+      // Apply probability check for each item
+      if (Math.random() > this.mutatePosition) return;
+      
+      // Mutate the offset (the position within the step)
+      // We'll make small adjustments around the current position
+      const currentOffset = item.offset || 0.5;
+      
+      // Generate a random adjustment between -0.15 and 0.15
+      const offsetAdjustment = (Math.random() * 0.3) - 0.15;
+      
+      // Calculate new offset and clamp between 0 and 1
+      const newOffset = Math.max(0, Math.min(1, currentOffset + offsetAdjustment));
+      
+      // Only apply if there's an actual change
+      if (Math.abs(newOffset - currentOffset) > 0.01) {
+        console.log(`Mutating position offset for ${item.genomeId}: ${currentOffset.toFixed(2)} -> ${newOffset.toFixed(2)}`);
+        
+        // Update the item's offset
+        item.offset = newOffset;
+        mutationOccurred = true;
+      }
+    });
+    
+    // After position mutations, update the UI if any changes were made
+    if (mutationOccurred) {
+      this.updateSequencer();
+    }
   }
 
   /**
