@@ -529,6 +529,17 @@ export default function UnitConfigPanel({ unit, units, onClose, onUpdateUnit, tr
                     max={1}
                     step={0.01}
                   />
+                  <Slider 
+                    label="Group Prob." 
+                    value={unit.groupProb || 0} 
+                    onChange={val => handleValueChange('groupProb', val)} 
+                    min={0}
+                    max={1}
+                    step={0.01}
+                  />
+                  <div className="mt-1 text-xs text-gray-400 italic">
+                    Chance of new voices being added to existing time steps
+                  </div>
                   <div className="border-t border-blue-800/30 my-2 pt-2">
                     <Slider 
                       label="Meta-Mutation" 

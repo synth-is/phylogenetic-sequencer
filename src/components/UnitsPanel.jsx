@@ -1166,7 +1166,7 @@ const renderLoopingControls = (unit) => {
       <div className="mt-2 space-y-2">
         {groupedSequence.map(group => (
           <div 
-            key={group.offset}
+            key={`step-${group.offset}`}
             onClick={() => {
               sequencingUnit.selectTimestep(group.offset);
               forceSequenceUpdate(unit.id);
@@ -1192,9 +1192,9 @@ const renderLoopingControls = (unit) => {
             </div>
   
             {/* Render individual items in group */}
-            {group.items.map(item => (
+            {group.items.map((item, itemIndex) => (
               <div 
-                key={item.genomeId}
+                key={`${group.offset}-voice-${itemIndex}`}
                 className="bg-gray-700/50 rounded-sm p-2 space-y-2"
               >
                 <div className="flex items-center justify-between">

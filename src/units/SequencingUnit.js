@@ -524,7 +524,7 @@ export class SequencingUnit extends BaseUnit {
    * Check and start the evolution process if any parameters are set
    */
   checkAndStartEvolution() {
-    const shouldEvolve = this.grow > 0 || this.shrink > 0 || this.mutate > 0 || this.mutatePosition > 0 || this.metaMutate > 0;
+    const shouldEvolve = this.grow > 0 || this.shrink > 0 || this.mutate > 0 || this.mutatePosition > 0 || this.metaMutate > 0 || (this.groupProb > 0 && this.grow > 0);
     
     // Start evolution if it's not already running and parameters are set
     if (shouldEvolve && !this.evolutionActive) {
@@ -832,8 +832,24 @@ export class SequencingUnit extends BaseUnit {
       }
     }
     
-    // Find a nearby node in the tree to add
-    this.addNodeFromTree(targetTreeIndex);
+    // Determine if we should add to an existing timestep based on groupProb
+    let targetStep = null;
+    
+    if (this.groupProb > 0 && this.activeSequence.length > 0 && Math.random() < this.groupProb) {
+      // Get all existing timesteps
+      const existingSteps = Array.from(new Set(
+        this.activeSequence.map(item => item.step || 0)
+      ));
+      
+      if (existingSteps.length > 0) {
+        // Choose a random existing step
+        targetStep = existingSteps[Math.floor(Math.random() * existingSteps.length)];
+        console.log(`Group probability triggered: Adding to existing step ${targetStep}`);
+      }
+    }
+    
+    // Find a nearby node in the tree to add, specifying target step if applicable
+    this.addNodeFromTree(targetTreeIndex, targetStep);
   }
 
   /**
@@ -912,8 +928,10 @@ export class SequencingUnit extends BaseUnit {
 
   /**
    * Add a node from a specified tree
+   * @param {number} treeIndex - Index of the tree to add from
+   * @param {number|null} targetStep - Step position to add to (null for automatic)
    */
-  addNodeFromTree(treeIndex) {
+  addNodeFromTree(treeIndex, targetStep = null) {
     if (!this.treeData) {
       console.warn('No tree data available for adding nodes');
       return;
@@ -1020,18 +1038,41 @@ export class SequencingUnit extends BaseUnit {
         
         console.log(`Adding node to sequence from tree ${treeIndex}:`, cellData);
         
-        // Add to sequence
-        this.toggleSequenceItem(cellData);
+        // Generate random or use target step 
+        const step = targetStep !== null ? targetStep : 
+          this.activeSequence.length > 0 ? 
+            Math.max(...this.activeSequence.map(item => item.step || 0)) + 1 : 
+            0;
         
-        // After adding, immediately update its tree info
-        const addedItemIndex = this.activeSequence.findIndex(item => item.genomeId === cellData.genomeId);
-        if (addedItemIndex >= 0) {
-          this.activeSequence[addedItemIndex].treeInfo = {
+        // Add to sequence
+        this.activeSequence.push({
+          ...cellData,
+          step,
+          offset: 0.5,
+          durationScale: 1,
+          pitchShift: this.pitch || 0,
+          duration: randomNode.duration || 4,
+          pitch: randomNode.noteDelta || 0,
+          velocity: randomNode.velocity || 1,
+          stretch: 1,
+          treeInfo: {
             treeIndex: treeIndex,
             treeId: targetTree.name || `tree_${treeIndex}`,
-            path: randomNode.path || ''
-          };
-        }
+            path: randomNode.path
+          }
+        });
+        
+        // Register with parameter registry for rendering
+        VoiceParameterRegistry.registerVoice(
+          `seq-${this.id}-${cellData.genomeId}`,
+          cellData.genomeId,
+          {
+            duration: randomNode.duration || 4,
+            pitch: randomNode.noteDelta || 0,
+            velocity: randomNode.velocity || 1
+          },
+          `sequence-${this.id}`
+        );
       } else {
         console.warn('Tree data structure not supported for evolution');
       }
@@ -1174,12 +1215,21 @@ export class SequencingUnit extends BaseUnit {
   // Add method to get groups with step-based offsets
   getGroupedSequence() {
     const groups = new Map();
-    this.activeSequence.forEach(item => {
+    this.activeSequence.forEach((item, index) => {
       const step = item.step || 0;
+      
       if (!groups.has(step)) {
         groups.set(step, []);
       }
-      groups.get(step).push(item);
+      
+      // Create a unique internal ID for React keys if needed
+      // This doesn't affect the actual genomeId used for data operations
+      const itemWithReactId = {
+        ...item,
+        _reactId: `${item.genomeId}-${index}`
+      };
+      
+      groups.get(step).push(itemWithReactId);
     });
 
     return Array.from(groups.entries()).map(([step, items]) => ({
@@ -1328,7 +1378,7 @@ export class SequencingUnit extends BaseUnit {
     if (this.metaMutate <= 0) return;
     
     // Define the parameters that can be mutated
-    const mutableParams = ['grow', 'shrink', 'mutate', 'mutatePosition', 'probNewTree'];
+    const mutableParams = ['grow', 'shrink', 'mutate', 'mutatePosition', 'probNewTree', 'groupProb'];
     
     // Flag to track if any mutations occurred
     let mutationOccurred = false;
@@ -1405,9 +1455,7 @@ export class SequencingUnit extends BaseUnit {
     // If mutations occurred, notify UI of the changes
     if (mutationOccurred && this.configChangeCallback) {
       try {
-        // This callback should update the UI sliders
         this.configChangeCallback(updatedConfig);
-        console.log('Meta-mutation changes sent to UI:', updatedConfig);
       } catch (e) {
         console.error('Error in config change callback:', e);
       }
