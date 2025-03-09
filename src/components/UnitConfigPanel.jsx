@@ -380,12 +380,37 @@ export default function UnitConfigPanel({ unit, units, onClose, onUpdateUnit, tr
     if (unit.type === UNIT_TYPES.SEQUENCING && treeData && actualInstance) {
       console.log('UnitConfigPanel: Automatically updating tree information on panel open');
       actualInstance.updateTreeInformation(treeData);
+      
+      // Set up a callback for meta-mutations to update UI values
+      // This ensures UI sliders update when parameters evolve autonomously
+      actualInstance.onConfigChange(updatedConfig => {
+        console.log('Meta-mutation occurred, updating UI:', updatedConfig);
+        
+        // For each changed parameter, update the unit config
+        const newConfig = { ...unit }; // Create a new copy to avoid mutation issues
+        
+        Object.entries(updatedConfig).forEach(([param, value]) => {
+          newConfig[param] = value;
+        });
+        
+        // Update the unit with all changed parameters at once
+        onUpdateUnit(unit.id, newConfig);
+      });
     }
-  }, [unit.id, unit.type, treeData, actualInstance]);
+    
+    // Cleanup function to remove callback when component unmounts
+    return () => {
+      if (actualInstance && actualInstance.onConfigChange) {
+        // Remove callback by setting it to null
+        actualInstance.onConfigChange(null);
+      }
+    };
+  }, [unit.id, unit.type, treeData, actualInstance, onUpdateUnit]);
 
   return (
-    <div className="fixed right-4 top-16 z-50 bg-gray-900/95 backdrop-blur border border-gray-800 rounded-lg shadow-xl w-80">
-      <div className="flex items-center border-b border-gray-800 p-2">
+    <div className="fixed right-4 top-16 z-50 bg-gray-900/95 backdrop-blur border border-gray-800 rounded-lg shadow-xl w-80 flex flex-col max-h-[calc(100vh-5rem)]">
+      {/* Header - Always visible */}
+      <div className="flex items-center border-b border-gray-800 p-2 shrink-0">
         <div className="flex-1 flex items-center gap-2">
           <button
             onClick={() => setIsCollapsed(!isCollapsed)}
@@ -413,8 +438,13 @@ export default function UnitConfigPanel({ unit, units, onClose, onUpdateUnit, tr
         </button>
       </div>
 
-      <div className={`overflow-hidden transition-all duration-200 ${isCollapsed ? 'max-h-0' : 'max-h-[calc(100vh-8rem)]'}`}>
-        <div className="p-4 overflow-y-auto">
+      {/* Main content area - Scrollable */}
+      <div 
+        className={`transition-all duration-200 overflow-hidden ${
+          isCollapsed ? 'max-h-0' : 'flex-1 overflow-y-auto'
+        }`}
+      >
+        <div className="p-4">
           {activeTab === 'Unit' && (
             <>
               {/* Show Playback section for both TrajectoryUnit and LoopingUnit */}
@@ -484,7 +514,7 @@ export default function UnitConfigPanel({ unit, units, onClose, onUpdateUnit, tr
                     step={0.01}
                   />
                   <Slider 
-                    label="Mutate Relative Position" 
+                    label="Mutate Position" 
                     value={unit.mutatePosition || 0} 
                     onChange={val => handleValueChange('mutatePosition', val)} 
                     min={0}
@@ -499,6 +529,19 @@ export default function UnitConfigPanel({ unit, units, onClose, onUpdateUnit, tr
                     max={1}
                     step={0.01}
                   />
+                  <div className="border-t border-blue-800/30 my-2 pt-2">
+                    <Slider 
+                      label="Meta-Mutation" 
+                      value={unit.metaMutate || 0} 
+                      onChange={val => handleValueChange('metaMutate', val)} 
+                      min={0}
+                      max={1}
+                      step={0.01}
+                    />
+                    <div className="mt-1 text-xs text-gray-400 italic">
+                      Controls probability of evolution parameters evolving over time
+                    </div>
+                  </div>
                 </CollapsibleSection>
               )}
             </>

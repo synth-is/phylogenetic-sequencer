@@ -208,7 +208,24 @@ export default function UnitsPanel({
     units.forEach(unit => {
       const unitInstance = unitsRef.current.get(unit.id);
       if (unitInstance) {
-        unitInstance.updateConfig?.(unit);
+        // Ensure all parameters are properly passed to the instance
+        const configToUpdate = { ...unit };
+        
+        // Add special logging for evolution parameters
+        if (unit.type === UNIT_TYPES.SEQUENCING && 
+           (unit.grow !== undefined || unit.shrink !== undefined || 
+            unit.mutate !== undefined || unit.metaMutate !== undefined)) {
+          console.log(`Updating evolution parameters for unit ${unit.id}:`, {
+            grow: unit.grow,
+            shrink: unit.shrink,
+            mutate: unit.mutate,
+            mutatePosition: unit.mutatePosition,
+            probNewTree: unit.probNewTree,
+            metaMutate: unit.metaMutate
+          });
+        }
+        
+        unitInstance.updateConfig?.(configToUpdate);
       }
     });
 

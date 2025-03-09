@@ -32,10 +32,13 @@ export class SequencingUnit extends BaseUnit {
     this.mutate = 0;
     this.probNewTree = 0;
     this.mutatePosition = 0; // Add new parameter for position offset mutation
-
-    // Evolution state tracking
+    this.metaMutate = 0; // Add new parameter for meta-mutation probability
+    this.groupProb = 0; // Add new parameter for grouping probability
+    // Evolution state tracking new parameter for meta-mutation
     this.evolutionActive = false;
     this.lastEvolutionTime = 0;
+    this.evolutionInterval = 1000; // Time in ms between evolution steps
+    this.treeStatistics = null;
     this.evolutionInterval = 1000; // Time in ms between evolution steps
     this.treeStatistics = null;
     this.treeData = null; // Will store the most recent tree data
@@ -500,6 +503,8 @@ export class SequencingUnit extends BaseUnit {
       (config.shrink !== undefined && config.shrink !== this.shrink) ||
       (config.mutate !== undefined && config.mutate !== this.mutate) ||
       (config.mutatePosition !== undefined && config.mutatePosition !== this.mutatePosition) ||
+      (config.groupProb !== undefined && config.groupProb !== this.groupProb) ||
+      (config.metaMutate !== undefined && config.metaMutate !== this.metaMutate) ||
       (config.probNewTree !== undefined && config.probNewTree !== this.probNewTree);
     
     // Apply all config changes first
@@ -519,7 +524,7 @@ export class SequencingUnit extends BaseUnit {
    * Check and start the evolution process if any parameters are set
    */
   checkAndStartEvolution() {
-    const shouldEvolve = this.grow > 0 || this.shrink > 0 || this.mutate > 0 || this.mutatePosition > 0;
+    const shouldEvolve = this.grow > 0 || this.shrink > 0 || this.mutate > 0 || this.mutatePosition > 0 || this.metaMutate > 0;
     
     // Start evolution if it's not already running and parameters are set
     if (shouldEvolve && !this.evolutionActive) {
@@ -530,7 +535,9 @@ export class SequencingUnit extends BaseUnit {
         shrink: this.shrink,
         mutate: this.mutate,
         mutatePosition: this.mutatePosition,
+        groupProb: this.groupProb,
         probNewTree: this.probNewTree,
+        metaMutate: this.metaMutate,
         sequenceLength: this.activeSequence.length
       });
       
@@ -582,19 +589,17 @@ export class SequencingUnit extends BaseUnit {
     // Don't evolve if not active
     if (!this.evolutionActive) return;
     
-    console.log('Evolving sequence', {
-      currentLength: this.activeSequence.length,
-      grow: this.grow,
-      shrink: this.shrink,
-      mutate: this.mutate,
-      mutatePosition: this.mutatePosition,
-      probNewTree: this.probNewTree
-    });
-
-    // Record the evolution step for debugging
+    // Record the current state before any changes
     const beforeState = {
       time: Date.now(),
       sequenceLength: this.activeSequence.length,
+      parameters: {
+        grow: this.grow,
+        shrink: this.shrink,
+        mutate: this.mutate, 
+        mutatePosition: this.mutatePosition,
+        probNewTree: this.probNewTree
+      },
       itemsById: this.activeSequence.map(item => ({
         genomeId: item.genomeId,
         treeIndex: item.treeInfo?.treeIndex,
@@ -602,6 +607,24 @@ export class SequencingUnit extends BaseUnit {
         offset: item.offset || 0.5
       }))
     };
+    
+    // First, potentially mutate the probability parameters themselves
+    // This happens on each evolution step, so parameters can change gradually over time
+    // These updated parameters will be used immediately in the current evolution step
+    if (this.metaMutate > 0) {
+      console.log('Checking for meta-mutations with probability:', this.metaMutate);
+      this.performMetaMutation();
+    }
+    
+    console.log('Evolving sequence', {
+      currentLength: this.activeSequence.length,
+      grow: this.grow,
+      shrink: this.shrink,
+      mutate: this.mutate,
+      mutatePosition: this.mutatePosition,
+      probNewTree: this.probNewTree,
+      metaMutate: this.metaMutate
+    });
     
     // Only check for tree statistics if we're trying to grow
     // Skip this check for shrink-only operations on empty sequences
@@ -644,6 +667,13 @@ export class SequencingUnit extends BaseUnit {
     const afterState = {
       time: Date.now(),
       sequenceLength: this.activeSequence.length,
+      parameters: {
+        grow: this.grow,
+        shrink: this.shrink,
+        mutate: this.mutate,
+        mutatePosition: this.mutatePosition,
+        probNewTree: this.probNewTree
+      },
       itemsById: this.activeSequence.map(item => ({
         genomeId: item.genomeId,
         treeIndex: item.treeInfo?.treeIndex,
@@ -671,6 +701,17 @@ export class SequencingUnit extends BaseUnit {
       });
     }
     
+    // Track parameter changes for logging and debugging
+    const parameterChanges = {};
+    Object.keys(beforeState.parameters).forEach(param => {
+      if (beforeState.parameters[param] !== afterState.parameters[param]) {
+        parameterChanges[param] = {
+          from: beforeState.parameters[param],
+          to: afterState.parameters[param]
+        };
+      }
+    });
+    
     this.evolutionHistory.push({
       before: beforeState,
       after: afterState,
@@ -678,11 +719,16 @@ export class SequencingUnit extends BaseUnit {
         added: afterState.sequenceLength - beforeState.sequenceLength,
         removed: Math.max(0, beforeState.sequenceLength - afterState.sequenceLength),
         unchanged: Math.min(beforeState.sequenceLength, afterState.sequenceLength),
-        positionChanges // Track position changes
+        positionChanges, // Track position changes
+        parameterChanges  // Track parameter changes from meta-mutation
       }
     });
     
-    // Log position changes if any occurred
+    // Log significant changes
+    if (Object.keys(parameterChanges).length > 0) {
+      console.log('Parameter mutations occurred:', parameterChanges);
+    }
+    
     if (positionChanges.length > 0) {
       console.log('Position mutations occurred:', positionChanges);
     }
@@ -1264,5 +1310,109 @@ export class SequencingUnit extends BaseUnit {
         console.log(`${treeKey}: ${items.length} voices`);
       });
     }
+  }
+
+  /**
+   * Register a config change callback to notify when parameter values change
+   * through meta-mutation
+   * @param {Function} callback - The function to call when config changes
+   */
+  onConfigChange(callback) {
+    this.configChangeCallback = callback;
+  }
+
+  /**
+   * Perform meta-mutation on probability parameters
+   */
+  performMetaMutation() {
+    if (this.metaMutate <= 0) return;
+    
+    // Define the parameters that can be mutated
+    const mutableParams = ['grow', 'shrink', 'mutate', 'mutatePosition', 'probNewTree'];
+    
+    // Flag to track if any mutations occurred
+    let mutationOccurred = false;
+    const updatedConfig = {};
+    
+    // Consider each parameter with equal probability
+    mutableParams.forEach(param => {
+      // Each parameter has a chance to mutate based on metaMutate value
+      if (Math.random() < this.metaMutate) {
+        const currentValue = this[param];
+        
+        // Different mutation strategies based on current value to prevent getting stuck
+        let newValue;
+        
+        // For very small values (close to 0), occasionally make larger jumps 
+        // to prevent getting stuck at 0
+        if (currentValue < 0.05) {
+          // Higher chance (40%) of making a significant positive jump when value is near zero
+          if (Math.random() < 0.4) {
+            // Jump to a random value between 0.05 and 0.2
+            newValue = 0.05 + Math.random() * 0.15;
+            console.log(`Meta-mutation ${param}: boosting from near-zero ${currentValue.toFixed(2)} to ${newValue.toFixed(2)}`);
+          } else {
+            // Small random adjustment with a bias towards increase
+            const adjustment = (Math.random() * 0.08) - 0.02; // -0.02 to +0.08
+            newValue = Math.max(0, Math.min(1, currentValue + adjustment));
+          }
+        } 
+        // For values near 1, occasionally make larger negative jumps
+        else if (currentValue > 0.95) {
+          // Higher chance (40%) of making a significant negative jump when value is near one
+          if (Math.random() < 0.4) {
+            // Jump to a random value between 0.8 and 0.95
+            newValue = 0.8 + Math.random() * 0.15;
+            console.log(`Meta-mutation ${param}: reducing from near-one ${currentValue.toFixed(2)} to ${newValue.toFixed(2)}`);
+          } else {
+            // Small random adjustment with a bias towards decrease
+            const adjustment = (Math.random() * 0.08) - 0.06; // -0.06 to +0.02
+            newValue = Math.max(0, Math.min(1, currentValue + adjustment));
+          }
+        }
+        // For mid-range values, use more balanced mutations
+        else {
+          // Calculate adjustment scale - larger for mid-range values for more movement
+          const adjustmentScale = Math.max(0.05, currentValue * 0.3);
+          
+          // Random adjustment between -adjustmentScale and +adjustmentScale
+          const adjustment = (Math.random() * 2 - 1) * adjustmentScale;
+          newValue = Math.max(0, Math.min(1, currentValue + adjustment));
+          
+          // 10% chance of making larger jumps to prevent getting stuck in local patterns
+          if (Math.random() < 0.1) {
+            // Equal chance of jumping higher or lower
+            if (Math.random() < 0.5) {
+              newValue = Math.min(1, currentValue + Math.random() * 0.3);
+            } else {
+              newValue = Math.max(0, currentValue - Math.random() * 0.3);
+            }
+          }
+        }
+        
+        // Only apply if there's an actual change beyond a minimum threshold
+        if (Math.abs(newValue - currentValue) > 0.01) {
+          console.log(`Meta-mutation: ${param} changed from ${currentValue.toFixed(2)} to ${newValue.toFixed(2)}`);
+          
+          // Update the parameter immediately for use in this evolution step
+          this[param] = newValue;
+          updatedConfig[param] = newValue;
+          mutationOccurred = true;
+        }
+      }
+    });
+    
+    // If mutations occurred, notify UI of the changes
+    if (mutationOccurred && this.configChangeCallback) {
+      try {
+        // This callback should update the UI sliders
+        this.configChangeCallback(updatedConfig);
+        console.log('Meta-mutation changes sent to UI:', updatedConfig);
+      } catch (e) {
+        console.error('Error in config change callback:', e);
+      }
+    }
+    
+    return mutationOccurred;
   }
 }
