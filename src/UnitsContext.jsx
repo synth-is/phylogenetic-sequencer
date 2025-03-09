@@ -108,6 +108,18 @@ export function UnitsProvider({ children }) {
     setModifiedParameters({});
   }, []);
 
+  // Add a method to get a unit instance by ID with debugging
+  const getUnitInstance = useCallback((unitId) => {
+    const instance = unitsRef.current.get(unitId);
+    console.log('getUnitInstance called:', {
+      unitId,
+      hasInstance: !!instance,
+      instanceType: instance?.type,
+      allInstanceIds: Array.from(unitsRef.current.keys())
+    });
+    return instance;
+  }, []);
+
   return (
     <UnitsContext.Provider value={{ 
       units, 
@@ -119,7 +131,8 @@ export function UnitsProvider({ children }) {
       handleCellDataModified,
       modifiedParameters,
       updateModifiedParameters,
-      resetModifiedParameters
+      resetModifiedParameters,
+      getUnitInstance // Expose the method
     }}>
       {children}
     </UnitsContext.Provider>

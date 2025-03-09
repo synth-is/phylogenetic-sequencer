@@ -19,7 +19,7 @@ import HeatmapViewer from './components/HeatmapViewer';
 import StrudelReplTest from './components/StrudelReplTest';
 import { StrudelPatternProvider } from './components/strudelPatternContext';
 import { DEFAULT_STRUDEL_CODE, LINEAGE_SOUNDS_BUCKET_HOST, UNIT_TYPES, DEFAULT_UNIT_CONFIGS } from './constants';
-import { UnitsProvider } from './UnitsContext';
+import { UnitsProvider, useUnits } from './UnitsContext';
 
 const TopBar = ({ 
   showUnits, 
@@ -84,7 +84,7 @@ function MainContent({
   lineageTreesIndex, 
   treeData,
   selectedUnitId,
-  handleCellHover,  // Changed from onCellHover
+  handleCellHover,
   ...props 
 }) {
   if (!lineageTreesIndex || !treeData) {
@@ -95,6 +95,26 @@ function MainContent({
 
   const runs = Object.keys(lineageTreesIndex);
   const steps = lineageTreesIndex[props.selectedRun].length;
+
+  // Add a hook to access the UnitsContext
+  const { getUnitInstance, unitsRef } = useUnits();
+  
+  // Get the unit instance for the selected unit
+  const selectedUnitInstance = selectedUnitId ? getUnitInstance(selectedUnitId) : null;
+  
+  // Add fallback to window.getUnitInstance if needed
+  const actualUnitInstance = selectedUnitInstance || 
+    (window.getUnitInstance && selectedUnitId ? window.getUnitInstance(selectedUnitId) : null);
+  
+  // Debug log to track if we're getting the instance
+  console.log('MainContent: Selected unit instance:', {
+    selectedUnitId,
+    hasInstance: !!selectedUnitInstance,
+    hasWindowInstance: !!(window.getUnitInstance && selectedUnitId ? window.getUnitInstance(selectedUnitId) : null),
+    instanceType: selectedUnitInstance?.type || actualUnitInstance?.type,
+    unitsRefSize: unitsRef ? unitsRef.current?.size : 'unitsRef not available',
+    unitsRefKeys: unitsRef ? Array.from(unitsRef.current?.keys() || []) : 'keys not available'
+  });
 
   return (
     <div className="fixed inset-0 flex flex-col bg-gray-950">
@@ -150,6 +170,7 @@ function MainContent({
               onUpdateVolume={props.handleUpdateVolume}
               onUpdateUnit={props.handleUpdateUnit}  // Add this line
               onCellHover={props.lastHoverData}  // Pass the actual hover data
+              treeData={treeData}  // Pass treeData to UnitsPanel
             />
             
             {selectedUnitId && (
@@ -159,6 +180,8 @@ function MainContent({
                 onClose={() => props.handleSelectUnit(null)}
                 onUpdateUnit={props.handleUpdateUnit}
                 onPlaybackChange={props.handleUnitPlaybackChange}
+                treeData={treeData}  // Pass treeData to UnitConfigPanel
+                unitInstance={actualUnitInstance} // Use our actual unit instance with fallbacks
               />
             )}
           </div>

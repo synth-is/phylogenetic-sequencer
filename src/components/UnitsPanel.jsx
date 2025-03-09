@@ -119,7 +119,7 @@ export default function UnitsPanel({
   onUpdateUnit 
 }) {
   const [showTypeSelector, setShowTypeSelector] = useState(false);
-  const { handleCellHover, updateUnitConfig } = useUnits();
+  const { handleCellHover, updateUnitConfig, unitsRef: contextUnitsRef } = useUnits();
   const unitsRef = useRef(new Map());
 
   // Handle unit config updates
@@ -134,7 +134,7 @@ export default function UnitsPanel({
     });
   }, [units, updateUnitConfig]);
 
-  // Initialize new units
+  // Initialize new units and register them with global context
   useEffect(() => {
     // Create new units first
     units.forEach(async unit => {
@@ -156,6 +156,11 @@ export default function UnitsPanel({
           await unitInstance.initialize();
           unitsRef.current.set(unit.id, unitInstance);
           
+          // CRITICAL: Also add to the context unitsRef
+          if (contextUnitsRef && contextUnitsRef.current) {
+            contextUnitsRef.current.set(unit.id, unitInstance);
+          }
+          
           // Initialize trajectory state immediately for new trajectory units
           setTrajectoryStates(prev => {
             const newState = new Map(prev);
@@ -171,11 +176,31 @@ export default function UnitsPanel({
           unitInstance = new SequencingUnit(unit.id);
           await unitInstance.initialize();
           unitsRef.current.set(unit.id, unitInstance);
+          
+          // CRITICAL: Also add to the context unitsRef
+          if (contextUnitsRef && contextUnitsRef.current) {
+            contextUnitsRef.current.set(unit.id, unitInstance);
+          }
         } else if (unit.type === UNIT_TYPES.LOOPING) {
           unitInstance = new LoopingUnit(unit.id);
           await unitInstance.initialize();
           unitsRef.current.set(unit.id, unitInstance);
+          
+          // CRITICAL: Also add to the context unitsRef
+          if (contextUnitsRef && contextUnitsRef.current) {
+            contextUnitsRef.current.set(unit.id, unitInstance);
+          }
         }
+
+        // Debug log for unit registration
+        console.log('Unit registered with context:', {
+          unitId: unit.id, 
+          type: unit.type,
+          addedToLocalRef: !!unitsRef.current.get(unit.id),
+          addedToContextRef: contextUnitsRef && contextUnitsRef.current ? 
+            !!contextUnitsRef.current.get(unit.id) : 'context ref not available',
+          contextRefAvailable: !!contextUnitsRef
+        });
       }
     });
 
@@ -210,13 +235,32 @@ export default function UnitsPanel({
 
       unitInstance.cleanup();
       unitsRef.current.delete(id);
+      
+      // CRITICAL: Also remove from context unitsRef
+      if (contextUnitsRef && contextUnitsRef.current) {
+        contextUnitsRef.current.delete(id);
+      }
 
       console.log('UnitsPanel: Unit cleanup complete:', {
         id,
-        remainingUnits: Array.from(unitsRef.current.keys())
+        remainingUnits: Array.from(unitsRef.current.keys()),
+        remainingContextUnits: contextUnitsRef && contextUnitsRef.current ? 
+          Array.from(contextUnitsRef.current.keys()) : 'context ref not available'
       });
     });
-  }, [units]);
+  }, [units, contextUnitsRef]);
+
+  // Add a public API to access unit instances
+  // This allows components outside to access the unit instances
+  useEffect(() => {
+    // Expose getUnitInstance function on window for debugging
+    window.getUnitInstance = (unitId) => unitsRef.current.get(unitId);
+    
+    return () => {
+      // Clean up when component unmounts
+      delete window.getUnitInstance;
+    };
+  }, []);
 
   // Keep only ONE hover handler - This is the only useEffect we need for hover events
   useEffect(() => {

@@ -988,6 +988,60 @@ const PhylogeneticViewer = ({
   // Add a ref to track the currently hovered node
   const currentHoveredNodeRef = useRef(null);
 
+  // Store experiment and evoRunId in global window for access by other components
+  useEffect(() => {
+    if (experiment) {
+      window.phyloExperiment = experiment;
+    }
+    
+    if (evoRunId) {
+      window.phyloEvoRunId = evoRunId;
+    }
+    
+    // Store combined information in tree data itself for easier access
+    if (treeData && (experiment || evoRunId)) {
+      // Add annotations to the tree data to help with identification
+      const annotatedTreeData = {
+        ...treeData,
+        experiment: experiment,
+        evoRunId: evoRunId,
+        __timestamp: Date.now(), // Add timestamp to detect changes
+        __source: 'PhylogeneticViewer', // Indicate source of data
+      };
+      
+      window.phyloTreeData = annotatedTreeData;
+      console.log('Stored annotated tree data in window.phyloTreeData', {
+        experiment,
+        evoRunId,
+        treeDataAvailable: !!treeData,
+        timestamp: annotatedTreeData.__timestamp
+      });
+      
+      // Automatically notify any active sequencing units about the tree data
+      if (window.getUnitInstance) {
+        try {
+          const units = document.querySelectorAll('[data-unit-id]');
+          units.forEach(unitEl => {
+            const unitId = unitEl.getAttribute('data-unit-id');
+            const unitInstance = window.getUnitInstance(unitId);
+            
+            if (unitInstance && unitInstance.type === 'SEQUENCING') {
+              console.log(`Auto-updating tree information for unit ${unitId}`);
+              unitInstance.updateTreeInformation(annotatedTreeData);
+            }
+          });
+        } catch (err) {
+          console.warn('Error while auto-updating sequencing units:', err);
+        }
+      }
+    }
+    
+    return () => {
+      // We keep the global data for cross-component access
+      // But we could clean it up here if needed
+    };
+  }, [experiment, evoRunId, treeData]);
+
   return (
     <div 
       className={`flex flex-col h-screen ${theme === 'light' ? 'bg-gray-100' : 'bg-gray-950'}`}
