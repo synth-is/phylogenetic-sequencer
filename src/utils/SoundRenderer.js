@@ -1,7 +1,11 @@
 import { LINEAGE_SOUNDS_BUCKET_HOST } from '../constants';
 
-// WebSocket server URL - this should be moved to environment config 
-const RENDERING_SOCKET_SERVER = 'ws://localhost:3000';
+// WebSocket server URL based on environment
+// Use secure WebSocket (wss://) in production, regular WebSocket (ws://) in development
+const RENDERING_SOCKET_SERVER = window.location.hostname === 'localhost' || 
+                               window.location.hostname === '127.0.0.1'
+  ? 'ws://localhost:3000'
+  : 'wss://rendering.synth.is';
 
 // Create a worker blob to handle WebSocket communication off the main thread
 const createWebSocketWorker = () => {
