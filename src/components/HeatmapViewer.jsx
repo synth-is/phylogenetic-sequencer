@@ -1,9 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Settings, Download } from 'lucide-react';
 import * as d3 from 'd3';
-import {el} from '@elemaudio/core';
-import WebRenderer from '@elemaudio/web-renderer';
-import { LINEAGE_SOUNDS_BUCKET_HOST } from '../constants';
+import { getRestServiceHost, REST_ENDPOINTS } from '../constants';
 
 // Add COLORMAP_OPTIONS before component
 const COLORMAP_OPTIONS = {
@@ -100,279 +98,82 @@ const HeatmapViewer = ({
   setShowSettings,
   experiment,  // Add missing prop
   evoRunId,
-  matrixUrl,
+  matrixUrls,
   hasAudioInteraction,
-  onAudioInteraction
+  onAudioInteraction,
+  onCellHover
 }) => {
-  // Add cache for audio files
-  const audioBufferCacheRef = useRef(new Map());
-  const MAX_CACHE_SIZE = 20; // Limit cache size
-  
-  // All refs
+  // All refs - remove audio-related refs since we'll use the same system as PhylogeneticViewer
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
   const transformRef = useRef(d3.zoomIdentity);
   const currentMatrixRef = useRef(null);
-  const rendererRef = useRef(null);
-  const contextRef = useRef(null);
-  const activeVoicesRef = useRef(new Map());
-  const triggerSourceRef = useRef(null);
-  const currentlyPlayingCellRef = useRef(null);
-  const throttleTimeoutRef = useRef(null);
-  const lastPlayedCellRef = useRef(null);
-  const audioDataCache = useRef(new Map());
+  const hoverTimestampsRef = useRef(new Map()); // Add hover debouncing like PhylogeneticViewer
+  const currentHoveredCellRef = useRef(null); // Track currently hovered cell to prevent repeated triggers
 
-  // All state
+  // All state - remove audio-related state
   const [matrixData, setMatrixData] = useState(null);
-  const [reverbAmount, setReverbAmount] = useState(5);
-  const [maxVoices, setMaxVoices] = useState(4);
   const [selectedGeneration, setSelectedGeneration] = useState(0);
   const [selectedColormap, setSelectedColormap] = useState('plasma');
   const [theme, setTheme] = useState('dark');
   const [useSquareCells, setUseSquareCells] = useState(true);
-  const [rendererReady, setRendererReady] = useState(false);
+  const [silentMode, setSilentMode] = useState(false);
 
-  // Add matrix data loading effect
+  // Add matrix data loading effect with hybrid approach
   useEffect(() => {
-    if (!matrixUrl) return;
+    if (!matrixUrls) return;
     
-    console.log('Fetching matrix data for URL:', matrixUrl);
+    console.log('Fetching matrix data with hybrid approach:', matrixUrls);
     
-    fetch(matrixUrl)
-      .then(response => response.json())
+    // Try REST service first
+    fetch(matrixUrls.restUrl)
+      .then(response => {
+        if (!response.ok) {
+          throw new Error(`REST service failed: ${response.status}`);
+        }
+        // Check if the response is gzipped
+        const contentType = response.headers.get('content-type');
+        const contentEncoding = response.headers.get('content-encoding');
+        
+        if (matrixUrls.restUrl.endsWith('.gz') || contentEncoding === 'gzip') {
+          // Handle gzipped response
+          return response.arrayBuffer().then(buffer => {
+            const decompressed = new DecompressionStream('gzip');
+            const stream = new Response(buffer).body.pipeThrough(decompressed);
+            return new Response(stream).text();
+          }).then(text => JSON.parse(text));
+        } else {
+          return response.json();
+        }
+      })
       .then(data => {
+        console.log('Matrix data loaded from REST service');
         setMatrixData(data);
       })
-      .catch(error => console.error('Error loading matrix data:', error));
-  }, [matrixUrl]);
+      .catch(error => {
+        console.warn('REST service failed, trying fallback:', error.message);
+        // Try fallback URL
+        fetch(matrixUrls.fallbackUrl)
+          .then(response => {
+            if (!response.ok) {
+              throw new Error(`Fallback failed: ${response.status}`);
+            }
+            return response.json();
+          })
+          .then(data => {
+            console.log('Matrix data loaded from fallback URL');
+            setMatrixData(data);
+          })
+          .catch(fallbackError => {
+            console.error('Both REST service and fallback failed:', { 
+              restError: error, 
+              fallbackError 
+            });
+          });
+      });
+  }, [matrixUrls]);
 
-  // Replace AudioManager refs with Elementary refs
-
-  // Initialize Elementary on component mount
-  useEffect(() => {
-    let mounted = true;
-    let audioCtx = null;
-    
-    const setupAudio = async () => {
-      try {
-        audioCtx = new AudioContext();
-        await audioCtx.resume();
-  
-        const core = new WebRenderer();
-        console.log('Setting up audio, context state:', audioCtx.state);
-  
-        await new Promise(resolve => setTimeout(resolve, 0));
-        
-        const node = await core.initialize(audioCtx, {
-          numberOfInputs: 0,
-          numberOfOutputs: 1,
-          outputChannelCount: [2],
-        });
-  
-        console.log('Core initialized');
-        node.connect(audioCtx.destination);
-        
-        if (!mounted) return;
-  
-        console.log('Elementary Audio engine initialized');
-        rendererRef.current = core;
-        contextRef.current = audioCtx;
-        setRendererReady(true);
-  
-      } catch (err) {
-        console.error('Error initializing Elementary Audio:', err);
-      }
-    };
-  
-    setupAudio();
-  
-    return () => {
-      mounted = false;
-      if (audioCtx?.state !== 'closed') {
-        audioCtx.close();
-      }
-    };
-  }, []);
-
-  // Load reverb impulse response
-  useEffect(() => {
-    if (!rendererReady) return;
-
-    const loadReverb = async () => {
-      try {
-        const response = await fetch('/WIDEHALL-1.wav');
-        const arrayBuffer = await response.arrayBuffer();
-        const audioData = await rendererRef.current.context.decodeAudioData(arrayBuffer);
-
-        await rendererRef.current.updateVirtualFileSystem({
-          'reverb-ir': audioData.getChannelData(0)
-        });
-
-        console.log('Reverb IR loaded');
-      } catch (err) {
-        console.error('Error loading reverb:', err);
-      }
-    };
-
-    loadReverb();
-  }, [rendererReady]);
-
-  // Add cache cleanup function with safe VFS update
-  const cleanupOldestCache = useCallback(async () => {
-    if (audioBufferCacheRef.current.size >= MAX_CACHE_SIZE) {
-      const [oldestKey] = audioBufferCacheRef.current.keys();
-      audioBufferCacheRef.current.delete(oldestKey);
-      if (rendererRef.current) {
-        try {
-          const vfsUpdate = {};
-          vfsUpdate[oldestKey] = new Float32Array(0); // Provide empty array instead of null
-          await rendererRef.current.updateVirtualFileSystem(vfsUpdate);
-        } catch (error) {
-          console.error('Error cleaning up VFS:', error);
-        }
-      }
-    }
-  }, []);
-
-  // Update playSound to handle VFS properly
-  const playSound = useCallback(async (cell, indices) => {
-    if (!hasAudioInteraction || !rendererReady || !rendererRef.current || !matrixData) return;
-    if (!cell.genomeId) return; // Skip cells without genomeId
-
-    // Throttle sound triggering
-    if (throttleTimeoutRef.current) return;
-    
-    // Don't replay the same cell
-    const cellKey = `${indices.i}-${indices.j}`;
-    if (lastPlayedCellRef.current === cellKey) return;
-    lastPlayedCellRef.current = cellKey;
-
-    try {
-      const config = matrixData.evolutionRunConfig;
-      const vfsKey = `sound-${cell.genomeId}`;
-
-      let audioData;
-      // Check both caches
-      if (!audioDataCache.current.has(vfsKey)) {
-        await cleanupOldestCache();
-        
-        const fileName = `${cell.genomeId}-${config.classScoringDurations[0]}_${config.classScoringNoteDeltas[0]}_${config.classScoringVelocities[0]}.wav`;
-        const audioUrl = `${LINEAGE_SOUNDS_BUCKET_HOST}/${experiment}/${evoRunId}/${fileName}`;
-
-        const response = await fetch(audioUrl, {
-          mode: 'cors',
-          headers: { 'Accept': 'audio/wav, audio/*' }
-        });
-
-        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-
-        const arrayBuffer = await response.arrayBuffer();
-        audioData = await rendererRef.current.context.decodeAudioData(arrayBuffer);
-        
-        // Cache the audio data
-        audioDataCache.current.set(vfsKey, audioData);
-      } else {
-        audioData = audioDataCache.current.get(vfsKey);
-      }
-
-      // Update or create VFS entry
-      const vfsUpdate = {};
-      vfsUpdate[vfsKey] = audioData.getChannelData(0);
-      await rendererRef.current.updateVirtualFileSystem(vfsUpdate);
-
-      // Create or update trigger with correct duration
-      const triggerRate = 1 / audioData.duration;
-      const trigger = el.train(
-        el.const({ key: `rate-${cell.genomeId}`, value: triggerRate })
-      );
-
-      // Create new voice
-      const newVoice = el.mul(
-        el.mul(
-          el.sample(
-            { path: vfsKey, mode: 'trigger', key: `sample-${cell.genomeId}` },
-            trigger,
-            el.const({ key: `playback-rate-${cell.genomeId}`, value: 1 })
-          ),
-          el.adsr(0.01, 0.1, 0.7, 0.3, trigger)
-        ),
-        el.const({ key: `voice-gain-${cell.genomeId}`, value: 1 / maxVoices })
-      );
-
-      // Manage voices
-      if (activeVoicesRef.current.size >= maxVoices) {
-        const [oldestKey] = activeVoicesRef.current.keys();
-        activeVoicesRef.current.delete(oldestKey);
-      }
-      activeVoicesRef.current.set(cell.genomeId, newVoice);
-
-      // Mix voices
-      const voices = Array.from(activeVoicesRef.current.values());
-      let mix = voices.length > 1 ? el.add(...voices) : voices[0];
-
-      // Add reverb
-      if (reverbAmount > 0) {
-        const reverbSignal = el.mul(
-          el.convolve({ path: 'reverb-ir', key: `reverb-${cell.genomeId}` }, mix),
-          el.const({ key: `wet-gain-${cell.genomeId}`, value: reverbAmount / 100 * 0.3 })
-        );
-        const drySignal = el.mul(
-          mix,
-          el.const({ key: `dry-gain-${cell.genomeId}`, value: 1 - (reverbAmount / 100) })
-        );
-        mix = el.mul(
-          el.add(drySignal, reverbSignal),
-          el.const({ key: `master-gain-${cell.genomeId}`, value: 0.7 })
-        );
-      }
-
-      await rendererRef.current.render(mix, mix);
-      currentlyPlayingCellRef.current = indices;
-      requestAnimationFrame(drawHeatmap);
-
-      // Set throttle timeout based on audio duration
-      throttleTimeoutRef.current = setTimeout(() => {
-        throttleTimeoutRef.current = null;
-        lastPlayedCellRef.current = null;
-      }, audioData.duration * 1000); // Convert to milliseconds
-
-    } catch (error) {
-      console.error('Error playing sound:', error);
-      throttleTimeoutRef.current = null;
-      lastPlayedCellRef.current = null;
-    }
-  }, [experiment, evoRunId, hasAudioInteraction, rendererReady, maxVoices, reverbAmount, matrixData, cleanupOldestCache]);
-
-  // Update cleanup
-  useEffect(() => {
-    return () => {
-      // Clear audio cache with proper VFS cleanup
-      if (rendererRef.current) {
-        const vfsUpdate = {};
-        Array.from(audioBufferCacheRef.current.keys()).forEach(key => {
-          vfsUpdate[key] = new Float32Array(0);
-        });
-        rendererRef.current.updateVirtualFileSystem(vfsUpdate).catch(console.error);
-      }
-      audioBufferCacheRef.current.clear();
-      activeVoicesRef.current.clear();
-      
-      if (contextRef.current?.state !== 'closed') {
-        contextRef.current?.close();
-      }
-      if (throttleTimeoutRef.current) {
-        clearTimeout(throttleTimeoutRef.current);
-      }
-      audioDataCache.current.clear();
-    };
-  }, []);
-
-  // Add reverb change handler
-  const handleReverbChange = useCallback((e) => {
-    setReverbAmount(Number(e.target.value));
-  }, []);
-
-  // Enhance settings panel with polyphony control
+  // Simplified settings panel - remove audio-specific controls since they're handled by the shared audio system
   const renderSettings = () => (
     <div className="absolute right-0 top-12 p-4 bg-gray-900/95 backdrop-blur rounded-l w-64">
       <div className="space-y-4">
@@ -392,42 +193,35 @@ const HeatmapViewer = ({
           </select>
         </div>
 
-        {/* ...existing settings... */}
-
-        {/* Add Reverb Control */}
+        {/* Cell Shape Toggle */}
         <div className="space-y-2">
-          <label className="text-sm text-white">Reverb Amount</label>
-          <div className="flex items-center gap-2">
-            <input
-              type="range"
-              className="flex-1 h-2 bg-gray-700"
-              min="0"
-              max="100"
-              value={reverbAmount}
-              onChange={handleReverbChange}
-            />
-            <span className="text-sm text-gray-300 w-8">{reverbAmount}%</span>
-          </div>
+          <label className="text-sm text-white">Cell Shape</label>
+          <button
+            onClick={() => setUseSquareCells(!useSquareCells)}
+            className={`w-full px-2 py-1 rounded text-sm ${
+              useSquareCells 
+                ? 'bg-blue-600 text-white' 
+                : 'bg-gray-700 text-gray-300'
+            }`}
+          >
+            {useSquareCells ? 'Square Cells' : 'Rectangular Cells'}
+          </button>
         </div>
 
-        {/* Add Polyphony Control */}
+        {/* Theme Toggle */}
         <div className="space-y-2">
-          <label className="text-sm text-white">Polyphony (Max Voices)</label>
-          <div className="flex items-center gap-2">
-            <input
-              type="range"
-              className="flex-1 h-2 bg-gray-700"
-              min="1"
-              max="8"
-              step="1"
-              value={maxVoices}
-              onChange={(e) => setMaxVoices(Number(e.target.value))}
-            />
-            <span className="text-sm text-gray-300 w-8">{maxVoices}</span>
-          </div>
+          <label className="text-sm text-white">Theme</label>
+          <button
+            onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+            className={`w-full px-2 py-1 rounded text-sm ${
+              theme === 'dark' 
+                ? 'bg-gray-700 text-white' 
+                : 'bg-gray-200 text-gray-900'
+            }`}
+          >
+            {theme === 'dark' ? 'Dark Theme' : 'Light Theme'}
+          </button>
         </div>
-
-        {/* ...rest of existing settings... */}
       </div>
     </div>
   );
@@ -529,16 +323,106 @@ const HeatmapViewer = ({
     );
   }, [drawHeatmap]);
 
-  // Initialize to last generation when data loads - moved up
+  // Initialize to last generation when data loads - only once
   useEffect(() => {
-    if (matrixData) {
+    if (matrixData && selectedGeneration === 0) {
       const lastGen = matrixData.scoreAndGenomeMatrices.length - 1;
       setSelectedGeneration(lastGen);
     }
-  }, [matrixData]);
+  }, [matrixData, selectedGeneration]);
+
+  // Handle keyboard events for silent mode toggle
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === 'Alt' && e.type === 'keydown') {
+        e.preventDefault();
+        setSilentMode(prev => !prev);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   // Add mouse interaction handlers
   const handleMouseMove = useCallback((event) => {
+    if (!matrixData || !canvasRef.current || !hasAudioInteraction || silentMode) return;
+
+    const rect = canvasRef.current.getBoundingClientRect();
+    const x = (event.clientX - rect.left - transformRef.current.x) / transformRef.current.k;
+    const y = (event.clientY - rect.top - transformRef.current.y) / transformRef.current.k;
+    
+    const matrix = currentMatrixRef.current;
+    if (!matrix) return;
+
+    // Calculate cell dimensions
+    let cellWidth, cellHeight;
+    if (useSquareCells) {
+      const size = Math.min(canvasRef.current.width / matrix[0].length, canvasRef.current.height / matrix.length);
+      cellWidth = cellHeight = size;
+    } else {
+      cellWidth = canvasRef.current.width / matrix[0].length;
+      cellHeight = canvasRef.current.height / matrix.length;
+    }
+
+    // Get cell indices
+    const i = Math.floor(y / cellHeight);
+    const j = Math.floor(x / cellWidth);
+
+    // Check if within bounds and cell exists
+    if (i >= 0 && i < matrix.length && j >= 0 && j < matrix[0].length && matrix[i][j]) {
+      const cell = matrix[i][j];
+      
+      // Create a unique cell identifier based on position and genomeId
+      const cellKey = `${i}-${j}-${cell.genomeId}`;
+      
+      // Only trigger if this is a different cell than the currently hovered one
+      if (currentHoveredCellRef.current !== cellKey) {
+        currentHoveredCellRef.current = cellKey;
+        
+        // Use the same approach as PhylogeneticViewer - pass data to onCellHover for hover
+        if (onCellHover && cell.genomeId) {
+          // Add debouncing logic like PhylogeneticViewer
+          const now = Date.now();
+          const lastHover = hoverTimestampsRef.current.get(cell.genomeId) || 0;
+          
+          // Same debouncing approach as PhylogeneticViewer
+          const minTimeBetweenHovers = 30; // ms, same as PhylogeneticViewer
+          
+          if (now - lastHover < minTimeBetweenHovers) {
+            console.log('Debouncing rapid hover on cell:', cell.genomeId);
+            return;
+          }
+          
+          hoverTimestampsRef.current.set(cell.genomeId, now);
+          
+          const config = matrixData.evolutionRunConfig;
+          onCellHover({
+            data: {
+              id: cell.genomeId,
+              genomeId: cell.genomeId,
+              score: cell.score,
+              generation: selectedGeneration,
+              position: { i, j }
+            },
+            experiment,
+            evoRunId,
+            config: {
+              duration: config.classScoringDurations[0],
+              noteDelta: config.classScoringNoteDeltas[0],
+              velocity: config.classScoringVelocities[0]
+            }
+          });
+        }
+      }
+    } else {
+      // Clear current hovered cell when mouse is not over any valid cell
+      currentHoveredCellRef.current = null;
+    }
+  }, [matrixData, hasAudioInteraction, useSquareCells, experiment, evoRunId, onCellHover, selectedGeneration, silentMode]);
+
+  // Add click handler for adding sounds to sequence (similar to PhylogeneticViewer)
+  const handleCanvasClick = useCallback((event) => {
     if (!matrixData || !canvasRef.current || !hasAudioInteraction) return;
 
     const rect = canvasRef.current.getBoundingClientRect();
@@ -564,9 +448,68 @@ const HeatmapViewer = ({
 
     // Check if within bounds and cell exists
     if (i >= 0 && i < matrix.length && j >= 0 && j < matrix[0].length && matrix[i][j]) {
-      playSound(matrix[i][j], { i, j });
+      const cell = matrix[i][j];
+      
+      // Use the same approach as PhylogeneticViewer - pass data to onCellHover with addToSequence flag
+      if (onCellHover && cell.genomeId) {
+        const config = matrixData.evolutionRunConfig;
+        onCellHover({
+          data: {
+            id: cell.genomeId,
+            genomeId: cell.genomeId,
+            score: cell.score,
+            generation: selectedGeneration,
+            position: { i, j },
+            duration: config.classScoringDurations[0],
+            noteDelta: config.classScoringNoteDeltas[0],
+            velocity: config.classScoringVelocities[0]
+          },
+          experiment,
+          evoRunId,
+          config: {
+            addToSequence: true, // This is the key flag for SequencingUnit
+            duration: config.classScoringDurations[0],
+            noteDelta: config.classScoringNoteDeltas[0],
+            velocity: config.classScoringVelocities[0]
+          }
+        });
+      }
     }
-  }, [matrixData, hasAudioInteraction, useSquareCells, playSound]);
+  }, [matrixData, hasAudioInteraction, useSquareCells, experiment, evoRunId, onCellHover, selectedGeneration]);
+
+  // SVG export function
+  const handleExportSVG = useCallback(() => {
+    if (!canvasRef.current) return;
+    
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    const width = canvasRef.current.width;
+    const height = canvasRef.current.height;
+    
+    svg.setAttribute('width', width);
+    svg.setAttribute('height', height);
+    svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+    
+    const img = document.createElementNS('http://www.w3.org/2000/svg', 'image');
+    img.setAttribute('x', 0);
+    img.setAttribute('y', 0);
+    img.setAttribute('width', width);
+    img.setAttribute('height', height);
+    img.setAttribute('href', canvasRef.current.toDataURL('image/png'));
+    
+    svg.appendChild(img);
+    
+    const svgString = new XMLSerializer().serializeToString(svg);
+    const blob = new Blob([svgString], { type: 'image/svg+xml' });
+    
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `heatmap-${Date.now()}.svg`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }, []);
 
   // Update return statement to include mouse events
   return (
@@ -580,13 +523,7 @@ const HeatmapViewer = ({
         className="w-full h-full"
         style={{ display: 'block' }}
         onMouseMove={handleMouseMove}
-        onClick={() => {
-          if (!hasAudioInteraction && contextRef.current) {
-            contextRef.current.resume().then(() => {
-              onAudioInteraction();
-            });
-          }
-        }}
+        onClick={hasAudioInteraction ? handleCanvasClick : () => onAudioInteraction()}
       />
       
       {!hasAudioInteraction && (
@@ -614,7 +551,34 @@ const HeatmapViewer = ({
         </div>
       )}
 
-      {/* ...existing settings panel and other UI elements... */}
+      {/* Bottom-left instructions and controls */}
+      <div className="fixed bottom-2 left-2 text-white/70 text-xs flex items-center gap-2 z-50">
+        <button
+          onClick={handleExportSVG}
+          className="p-1.5 rounded bg-gray-800/80 hover:bg-gray-700/80 text-white mr-2"
+          title="Export as SVG"
+        >
+          <Download size={16} />
+        </button>
+        <span>Hover: {silentMode ? 'navigation only' : 'play sound'} • Click: add to sequence</span>
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            setSilentMode(prev => !prev);
+          }}
+          className={`px-2 py-1 rounded text-xs transition-colors ${
+            silentMode 
+              ? 'bg-blue-600 text-white' 
+              : 'bg-gray-800/80 text-gray-400 hover:text-white'
+          }`}
+        >
+          {silentMode ? 'Silent Mode On' : 'Silent Mode Off'}
+        </button>
+        <span className="text-gray-500">(Alt to toggle)</span>
+      </div>
+
+      {/* Settings Panel */}
+      {showSettings && renderSettings()}
     </div>
   );
 };

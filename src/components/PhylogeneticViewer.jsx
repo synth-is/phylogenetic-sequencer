@@ -1,11 +1,46 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Search, Settings, Download } from 'lucide-react';
+import { Search, Settings, Download, RefreshCw } from 'lucide-react';
 import * as d3 from 'd3';
-import {el} from '@elemaudio/core';
-import WebRenderer from '@elemaudio/web-renderer';
 import { pruneTreeForContextSwitches } from './phylogenetic-tree-common';
-import { LINEAGE_SOUNDS_BUCKET_HOST } from '../constants';
-import AudioManager from './AudioManager';
+import { DEFAULT_LINEAGE_SOUNDS_BUCKET_HOST, getLineageSoundsBucketHost, getRestServiceHost, REST_ENDPOINTS } from '../constants';
+
+// Enhance the POSITION_CONFIG to include zoom-related display settings
+const POSITION_CONFIG = {
+  // Initial transform constants
+  INITIAL_SCALE: 1.6,        // Initial zoom level
+  INITIAL_X_OFFSET_PROP: -0.8, // Proportion of container width (negative moves left)
+  INITIAL_Y_OFFSET_PROP: -0.8, // Proportion of container height (negative moves up)
+  
+  // Tree layout constants
+  CENTER_ADJUST_X: 0,        // Adjust the tree center X position
+  CENTER_ADJUST_Y: 0,        // Adjust the tree center Y position
+  
+  // Viewport constants
+  USE_FULL_CONTAINER: true,  // Use the entire container rather than a square
+  MARGIN_FACTOR: 0.15,       // Margin as a percentage of the container size
+  MAINTAIN_CIRCULAR: true,   // Ensure the tree maintains circular proportions
+  
+  // Node and line scaling behavior
+  BASE_NODE_RADIUS: 6,       // Base node radius at zoom level 1
+  MIN_NODE_RADIUS: 2,        // Minimum node radius at any zoom level
+  MAX_NODE_RADIUS: 20,       // Maximum node radius at any zoom level
+  NODE_SCALING_FACTOR: 0.8,  // Controls how quickly nodes shrink when zooming in (0.5 = square root scaling)
+  
+  // Simplified line settings
+  LINE_WIDTH: 5,           // Base line width that will be consistently applied
+  LINE_SCALING_FACTOR: 0.15,  // Controls how quickly lines scale with zoom (lower = more consistent width)
+  
+  // High zoom level enhancement
+  HIGH_ZOOM_LEVEL: Infinity, // Threshold for "high zoom" behaviors
+  NODE_BORDER_WIDTH: 0.5,    // Node border width at high zoom levels
+  NODE_SEPARATION_BOOST: 0.2 // Reduce node size faster at high zoom for better separation (0-1, lower = more separation)
+};
+
+// Create a module-level variable to persist zoom state across renders
+// This will maintain the state even if the component unmounts and remounts
+const persistentZoomState = {
+  transform: null
+};
 
 const PhylogeneticViewer = ({ 
   treeData, 
@@ -14,486 +49,821 @@ const PhylogeneticViewer = ({
   showSettings, 
   setShowSettings,
   hasAudioInteraction,
-  onAudioInteraction 
+  onAudioInteraction,
+  onCellHover
 }) => {
-  // State declarations
   const [theme, setTheme] = useState('dark');
   const [measureContextSwitches, setMeasureContextSwitches] = useState(false);
-  const [reverbAmount, setReverbAmount] = useState(5);
   const [tooltip, setTooltip] = useState({ show: false, content: '', x: 0, y: 0 });
-  const [maxVoices, setMaxVoices] = useState(4);
   const [silentMode, setSilentMode] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [reverbAmount, setReverbAmount] = useState(20);
+  const [maxVoices, setMaxVoices] = useState(4);
+  const [customHostUrl, setCustomHostUrl] = useState(() => 
+    localStorage.getItem('CUSTOM_LINEAGE_SOUNDS_URL') || ''
+  );
+  const [isEditingUrl, setIsEditingUrl] = useState(false);
+  const [loadingError, setLoadingError] = useState(null);
+  const [isRetrying, setIsRetrying] = useState(false);
+  const retryTimeoutRef = useRef(null);
 
-  // Refs
-  const searchTermRef = useRef('');  // Search ref instead of state
+  // Audio-related refs
+  const audioContextRef = useRef(null);
+  const currentSourceRef = useRef(null);
+  const currentGainNodeRef = useRef(null);
+  const currentPlayingNodeRef = useRef(null);
+
+  // View-related refs
+  const searchTermRef = useRef('');
   const containerRef = useRef(null);
-  const svgRef = useRef(null);
-  const gRef = useRef(null);
-  const nodesRef = useRef(null);
-  const linksRef = useRef(null);
-  const currentZoomTransformRef = useRef(null);
+  const canvasRef = useRef(null);
+  const treeInitializedRef = useRef(false);
+  const playingNodesRef = useRef(new Set());
+  const hoverTimestampsRef = useRef(new Map());
+  const HOVER_DEBOUNCE = 50; // ms
 
-  const rendererRef = useRef(null);
+  // Refs for highlight tracking
+  const highlightTimestampsRef = useRef(new Map());
+  const cleanupIntervalRef = useRef(null);
+  const HIGHLIGHT_EXPIRY = 5000; // 5 seconds max highlight lifetime
 
-  const [rendererReady, setRendererReady] = useState(false);
-  const contextRef = useRef(null);
+  // Ref to track looping state
+  const loopingNodesRef = useRef(new Set());
 
-  const activeVoicesRef = useRef(new Map()); // Track active voices
-  const triggerSourceRef = useRef(null);
-
-  // Replace audio refs with AudioManager
-  const audioManagerRef = useRef(null);
-  const currentlyPlayingNodeRef = useRef(null);
-  const treeInitializedRef = useRef(false);  // Add this line
-
-  // Add active nodes tracking
-  const activeNodesRef = useRef(new Set());
-
-  // Constants
-  const FADE_TIME = 0.1;
-  const BASE_VOLUME = 1;
-
-  // Initialize Elementary on component mount
-  useEffect(() => {
-    let mounted = true;
-    let audioCtx = null;
-    
-    const setupAudio = async () => {
-      try {
-        audioCtx = new AudioContext();
-        await audioCtx.resume(); // Make sure context is active first
+  // D3 and rendering refs
+  const scalesRef = useRef({
+    x: d3.scaleLinear(),
+    y: d3.scaleLinear()
+  });
+  const quadtreeRef = useRef(null);
+  const flattenedDataRef = useRef([]);
+  const rawLayoutDataRef = useRef(null);
+  const currentZoomRef = useRef(null);
+  const animFrameRef = useRef(null);
+  const hasResetViewRef = useRef(false);
   
-        const core = new WebRenderer();
-        console.log('Setting up audio, context state:', audioCtx.state);
-  
-        // Wait a tick to ensure context is fully ready
-        await new Promise(resolve => setTimeout(resolve, 0));
-        
-        const node = await core.initialize(audioCtx, {
-          numberOfInputs: 0,
-          numberOfOutputs: 1,
-          outputChannelCount: [2],
-        });
-  
-        console.log('Core initialized');
-        node.connect(audioCtx.destination);
-        
-        if (!mounted) return;
-  
-        console.log('Elementary Audio engine initialized');
-        rendererRef.current = core;
-        contextRef.current = audioCtx;
-        setRendererReady(true);
-  
-      } catch (err) {
-        console.error('Error initializing Elementary Audio:', err, err.stack);
-      }
-    };
-  
-    setupAudio();
-  
-    return () => {
-      mounted = false;
-      if (audioCtx?.state !== 'closed') {
-        audioCtx.close();
-      }
-    };
+  // Node coloring function
+  const getNodeColor = useCallback((d) => {
+    if (playingNodesRef.current.has(d.id)) {
+      return 'red';
+    } else if (d.s !== undefined) {
+      return d3.interpolateViridis(d.s);
+    } else {
+      return '#999';
+    }
   }, []);
 
+  // Function to download node sound - define this early
+  const downloadNodeSound = useCallback((nodeData) => {
+    console.log('Downloading sound for node:', nodeData.id);
+  }, []);
 
-  useEffect(() => {
-    // Only try to load reverb if renderer is ready
-    if (!rendererReady) return;
-
-    const loadReverb = async () => {
-      try {
-        // Load reverb impulse response
-        const response = await fetch('/WIDEHALL-1.wav');
-        const arrayBuffer = await response.arrayBuffer();
-        const audioData = await rendererRef.current.context.decodeAudioData(arrayBuffer);
-
-        // Add to virtual file system
-        await rendererRef.current.updateVirtualFileSystem({
-          'reverb-ir': audioData.getChannelData(0)
-        });
-
-        console.log('Reverb IR loaded');
-      } catch (err) {
-        console.error('Error loading reverb:', err);
+  // Node click handler - define this early
+  const handleNodeClick = useCallback((nodeData) => {
+    if (!hasAudioInteraction || !onCellHover) return;
+    
+    onCellHover({
+      eventId: Date.now(),
+      data: nodeData,
+      experiment,
+      evoRunId,
+      config: {
+        addToSequence: true,
+        duration: nodeData.duration,
+        noteDelta: nodeData.noteDelta,
+        velocity: nodeData.velocity
       }
-    };
-
-    loadReverb();
-  }, [rendererReady]); // Use rendererReady instead of rendererRef.current
-
-  // Remove old audio setup code and replace with AudioManager initialization
-  useEffect(() => {
-    if (!audioManagerRef.current) {
-      audioManagerRef.current = new AudioManager();
-      audioManagerRef.current.initialize();
-    }
-    if (audioManagerRef.current) {
-      audioManagerRef.current.maxVoices = maxVoices;
-    }
-  }, [maxVoices]);
-
-  // Update redrawNodes to be more defensive
-  const redrawNodes = useCallback(() => {
-    if (!gRef.current || !audioManagerRef.current) return;
-    
-    const nodes = gRef.current.querySelectorAll('.node-circle');
-    const playingSounds = new Set([...audioManagerRef.current.playingCells.keys()]);
-    
-    nodes.forEach(node => {
-      const d = d3.select(node).datum();
-      const cellKey = `${d.data.id}-${d.data.id}`;
-      const isPlaying = playingSounds.has(cellKey);
-      const color = isPlaying ? '#ff0000' : 
-        (d.data.s ? d3.interpolateViridis(d.data.s) : "#999");
-      node.setAttribute('fill', color);
     });
-  }, []);
+  }, [experiment, evoRunId, hasAudioInteraction, onCellHover]);
 
-  // Memoize playAudioWithFade
-  const playAudioWithFade = useCallback(async (d) => {
-    if (!hasAudioInteraction || !audioManagerRef.current) return;
-
-    try {
-      const fileName = `${d.data.id}-${d.data.duration}_${d.data.noteDelta}_${d.data.velocity}.wav`;
-      const audioUrl = `${LINEAGE_SOUNDS_BUCKET_HOST}/${experiment}/${evoRunId}/${fileName}`;
+  // Node double-click handler for LiveCodingUnit
+  const handleNodeDoubleClick = useCallback((nodeData) => {
+    if (!hasAudioInteraction) return;
+    
+    console.log('Double-click on node:', nodeData.id);
+    
+    // Check if ANY LiveCodingUnit is selected (not just the most recent one)
+    const selectedUnitElement = document.querySelector('[data-selected-unit-type="LIVE_CODING"]');
+    const selectedUnitId = selectedUnitElement?.getAttribute('data-selected-unit-id');
+    
+  if (selectedUnitId && window.getUnitInstance) {
+      const liveCodingUnit = window.getUnitInstance(selectedUnitId);
       
-      const result = await audioManagerRef.current.playSound(audioUrl, { 
-        i: d.data.id, 
-        j: d.data.id
-      });
-      
-      if (result) {
-        requestAnimationFrame(redrawNodes);
-        const voice = audioManagerRef.current.voices.get(result.voiceId);
-        if (voice?.source) {
-          voice.source.onended = () => requestAnimationFrame(redrawNodes);
-        }
-      }
-    } catch (error) {
-      console.error('Error playing audio:', error);
-      requestAnimationFrame(redrawNodes);
-    }
-  }, [experiment, evoRunId, hasAudioInteraction, redrawNodes]);
-
-  // Remove stopAudioWithFade with cleanup using AudioManager
-  const stopAudioWithFade = async () => {
-    if (audioManagerRef.current) {
-      audioManagerRef.current.cleanup();
-      currentlyPlayingNodeRef.current = null;
-      requestAnimationFrame(redrawNodes); // Update to use redrawNodes
-    }
-  };
-
-  // Add cleanup on unmount
-  useEffect(() => {
-    return () => {
-      if (audioManagerRef.current) {
-        audioManagerRef.current.cleanup();
-      }
-      activeNodesRef.current.clear();
-    };
-  }, []);
-
-  // Update reverb mix when reverbAmount changes
-  useEffect(() => {
-    if (audioManagerRef.current) {
-      audioManagerRef.current.setReverbMix(reverbAmount);
-    }
-  }, [reverbAmount]);
-
-  // Slider handler
-  const handleReverbChange = useCallback((e) => {
-    setReverbAmount(Number(e.target.value));
-  }, []);
-
-  // Memoize heavy functions
-  const updateSearch = useCallback((term) => {
-    if (!gRef.current) return;
-    
-    const searchTerm = term.toLowerCase();
-    requestAnimationFrame(() => {
-      // Direct DOM manipulation instead of going through D3 selection
-      const nodes = gRef.current.querySelectorAll('.node');
-      const links = gRef.current.querySelectorAll('.link');
-
-      nodes.forEach(node => {
-        const d = d3.select(node).datum();
-        const opacity = d.data.name.toLowerCase().includes(searchTerm) ? 1 : 0.1;
-        node.style.opacity = opacity;
-      });
-
-      links.forEach(link => {
-        const d = d3.select(link).datum();
-        const opacity = d.target.data.name.toLowerCase().includes(searchTerm) ? 0.4 : 0.1;
-        link.style.opacity = opacity;
-      });
-    });
-  }, []);
-
-  // Handle search input without state updates
-  const handleSearchInput = useCallback((e) => {
-    searchTermRef.current = e.target.value;
-    updateSearch(e.target.value);
-  }, [updateSearch]);
-
-  const handleNodeMouseOver = useCallback(async (event, d) => {
-    setTooltip({
-      show: true,
-      content: `ID: ${d.data.name || d.data.id}<br/>Score: ${d.data.s ? d.data.s.toFixed(3) : 'N/A'}<br/>Generation: ${d.data.gN || 'N/A'}`,
-      x: event.pageX,
-      y: event.pageY
-    });
-  
-    if (hasAudioInteraction && !silentMode && rendererRef.current) {
-      const fileName = `${d.data.id}-${d.data.duration}_${d.data.noteDelta}_${d.data.velocity}.wav`;
-      const audioUrl = `${LINEAGE_SOUNDS_BUCKET_HOST}/${experiment}/${evoRunId}/${fileName}`;
-  
-      try {
-        const response = await fetch(audioUrl);
-        const arrayBuffer = await response.arrayBuffer();
-        const audioData = await rendererRef.current.context.decodeAudioData(arrayBuffer);
+      if (liveCodingUnit && liveCodingUnit.type === 'LIVE_CODING') {
+        console.log(`Double-click: Adding sound to SPECIFIC LiveCodingUnit: ${selectedUnitId}`);
         
-        const vfsKey = `sound-${d.data.id}`;
-        await rendererRef.current.updateVirtualFileSystem({
-          [vfsKey]: audioData.getChannelData(0)
+        // Create cell data for the specific LiveCodingUnit
+  const cellData = {
+          genomeId: nodeData.id,
+          experiment: experiment || 'unknown',
+          evoRunId: evoRunId || 'unknown',
+          duration: nodeData.duration || 2,
+          noteDelta: nodeData.noteDelta || 0,
+          pitch: nodeData.noteDelta || 0,
+          velocity: nodeData.velocity || 0.8,
+          // If we have the genome URL, include it
+          genomeUrl: nodeData.genomeUrl,
+          // Add unit targeting information
+          targetUnitId: selectedUnitId
+        };
+        
+        // Add sound to the specific live coding unit's sample bank
+        liveCodingUnit.addSoundToBank(cellData).then(result => {
+          if (result.strudelRegistered) {
+            console.log(`Sound successfully added to Unit ${selectedUnitId}:`, result.sampleName);
+          } else {
+            console.log(`Sound added to Unit ${selectedUnitId} bank, awaiting Strudel registration:`, result.sampleName);
+            // Show a unit-specific notification
+            const notification = document.createElement('div');
+            notification.innerHTML = `
+              <div class="fixed bottom-20 left-1/2 transform -translate-x-1/2 bg-yellow-600 text-white px-4 py-2 rounded shadow-lg z-50">
+                Sound added to Unit ${selectedUnitId}! Open its Live Code tab to complete setup.
+              </div>
+            `;
+            document.body.appendChild(notification);
+            setTimeout(() => notification.remove(), 3000);
+          }
+        }).catch(error => {
+          console.error(`Failed to add sound to LiveCodingUnit ${selectedUnitId}:`, error);
         });
-  
-        // Create or reuse shared trigger
-        if (!triggerSourceRef.current) {
-          triggerSourceRef.current = el.train(
-            el.const({ key: 'shared-rate', value: 1 / audioData.duration })
-          );
-        }
-  
-        // Create new voice using shared trigger
-        const newVoice = el.mul(
-          el.mul(
-            el.sample(
-              { path: vfsKey, mode: 'trigger', key: `sample-${d.data.id}` }, 
-              triggerSourceRef.current,  // Use shared trigger
-              el.const({ key: `playback-rate-${d.data.id}`, value: 1 })
-            ),
-            el.adsr(
-              0.01,
-              0.1,
-              0.7,
-              0.3,
-              triggerSourceRef.current  // Use same shared trigger
-            )
-          ),
-          el.const({ key: `voice-gain-${d.data.id}`, value: 1 / maxVoices })
-        );
-  
-        // Manage voice collection
-        if (activeVoicesRef.current.size >= maxVoices) {
-          const [oldestKey] = activeVoicesRef.current.keys();
-          activeVoicesRef.current.delete(oldestKey);
-        }
-        activeVoicesRef.current.set(d.data.id, newVoice);
-  
-        // Mix all active voices
-        const voices = Array.from(activeVoicesRef.current.values());
-        let mix = voices.length > 1 ? el.add(...voices) : voices[0];
-  
-        // Add reverb if enabled
-        if (reverbAmount > 0) {
-          const reverbSignal = el.mul(
-            el.convolve({ path: 'reverb-ir', key: `reverb-${d.data.id}` }, mix),
-            el.const({ key: `wet-gain-${d.data.id}`, value: reverbAmount / 100 * 0.3 })
-          );
-          const drySignal = el.mul(
-            mix, 
-            el.const({ key: `dry-gain-${d.data.id}`, value: 1 - (reverbAmount / 100) })
-          );
-          mix = el.mul(
-            el.add(drySignal, reverbSignal),
-            el.const({ key: `master-gain-${d.data.id}`, value: 0.7 })
-          );
-        }
-  
-        await rendererRef.current.render(mix, mix);
-        requestAnimationFrame(redrawNodes);
-      } catch (error) {
-        console.error('Error playing sound:', error);
+      }
+    } else {
+      // If no LiveCodingUnit is selected, show a helpful message
+      const notification = document.createElement('div');
+      notification.innerHTML = `
+        <div class="fixed bottom-20 left-1/2 transform -translate-x-1/2 bg-blue-600 text-white px-4 py-2 rounded shadow-lg z-50">
+          Select a LiveCoding unit first, then double-click sounds to add them.
+        </div>
+      `;
+      document.body.appendChild(notification);
+      setTimeout(() => notification.remove(), 2000);
+      
+      // Fallback: use the download functionality
+      if (onCellHover) {
+        downloadNodeSound(nodeData);
       }
     }
-  }, [experiment, evoRunId, hasAudioInteraction, silentMode, maxVoices, reverbAmount, redrawNodes]);
+  }, [experiment, evoRunId, hasAudioInteraction, downloadNodeSound]);
 
-  // Initialize D3 visualization
+  // Replace drawCurvedPath with a straight line function
+  const drawLine = useCallback((ctx, x1, y1, x2, y2) => {
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+  }, []);
+
+  // Update the renderCanvas function to implement improved scaling behavior
+  const renderCanvas = useCallback(() => {
+    if (!canvasRef.current || flattenedDataRef.current.length === 0) return;
+    
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d');
+    const { width, height } = canvas;
+    
+    // Clear canvas
+    ctx.clearRect(0, 0, width, height);
+    
+    // Apply zoom transform
+    const transform = currentZoomRef.current || d3.zoomIdentity;
+    ctx.save();
+    ctx.translate(transform.x, transform.y);
+    ctx.scale(transform.k, transform.k);
+    
+    // Calculate if we're in high zoom mode
+    const isHighZoom = transform.k > POSITION_CONFIG.HIGH_ZOOM_LEVEL;
+    
+    // Simplified line width calculation - smooth scaling with zoom
+    // Scale line width inversely with zoom level using scaling factor
+    // This ensures lines remain visible but not too thick at any zoom level
+    let lineWidth = POSITION_CONFIG.LINE_WIDTH;
+    
+    // Apply scaling based on zoom level - higher scaling factor = more consistent width
+    if (transform.k !== 1) {
+      lineWidth = lineWidth * Math.pow(transform.k, -POSITION_CONFIG.LINE_SCALING_FACTOR);
+    }
+    
+    // Apply the calculated line width (dividing by transform.k to counteract the ctx.scale)
+    ctx.lineWidth = lineWidth / transform.k;
+    ctx.strokeStyle = '#555';
+    ctx.globalAlpha = isHighZoom ? 0.6 : 0.4; // Make lines more visible at higher zoom
+    
+    flattenedDataRef.current.forEach(d => {
+      if (d.parentId !== null) {
+        const x1 = scalesRef.current.x(d.parentX);
+        const y1 = scalesRef.current.y(d.parentY);
+        const x2 = scalesRef.current.x(d.x);
+        const y2 = scalesRef.current.y(d.y);
+        drawLine(ctx, x1, y1, x2, y2);
+      }
+    });
+    
+    // Draw nodes with improved adaptive sizing for better separation when zoomed in
+    ctx.globalAlpha = 1;
+    
+    // Calculate node radius with advanced scaling
+    let nodeScalingPower = POSITION_CONFIG.NODE_SCALING_FACTOR;
+    
+    // If we're at high zoom, enhance node separation by using a stronger scaling factor
+    if (isHighZoom) {
+      nodeScalingPower = POSITION_CONFIG.NODE_SCALING_FACTOR * POSITION_CONFIG.NODE_SEPARATION_BOOST;
+    }
+    
+    // Calculate adaptive node radius that gets smaller (relatively) as you zoom in
+    // but at a controlled rate using the scaling power
+    const zoomScale = Math.pow(transform.k, nodeScalingPower);
+    const adaptiveRadius = POSITION_CONFIG.BASE_NODE_RADIUS / zoomScale;
+    
+    // Apply min/max constraints
+    const nodeRadius = Math.max(
+      POSITION_CONFIG.MIN_NODE_RADIUS / transform.k,
+      Math.min(POSITION_CONFIG.MAX_NODE_RADIUS / transform.k, adaptiveRadius)
+    );
+    
+    flattenedDataRef.current.forEach(d => {
+      const x = scalesRef.current.x(d.x);
+      const y = scalesRef.current.y(d.y);
+      
+      ctx.beginPath();
+      ctx.arc(x, y, nodeRadius, 0, 2 * Math.PI);
+      ctx.fillStyle = getNodeColor(d);
+      ctx.fill();
+      
+      // Add node border with improved visibility at high zoom levels
+      if (isHighZoom) {
+        ctx.strokeStyle = '#111';
+        ctx.lineWidth = POSITION_CONFIG.NODE_BORDER_WIDTH / transform.k;
+        ctx.stroke();
+      }
+    });
+    
+    ctx.restore();
+  }, [getNodeColor, drawLine]);
+
+  // Update node playing status
+  const setNodePlaying = useCallback((nodeId, isPlaying, isLooping = false) => {
+    console.log('setNodePlaying:', { nodeId, isPlaying, isLooping });
+    
+    if (isPlaying) {
+      playingNodesRef.current.add(nodeId);
+      highlightTimestampsRef.current.set(nodeId, Date.now());
+      if (isLooping) {
+        loopingNodesRef.current.add(nodeId);
+      }
+    } else {
+      playingNodesRef.current.delete(nodeId);
+      highlightTimestampsRef.current.delete(nodeId);
+      loopingNodesRef.current.delete(nodeId);
+    }
+    
+    console.log('Current state:', {
+      playing: Array.from(playingNodesRef.current),
+      looping: Array.from(loopingNodesRef.current)
+    });
+    
+    // Trigger re-render
+    if (canvasRef.current) {
+      if (animFrameRef.current) {
+        cancelAnimationFrame(animFrameRef.current);
+      }
+      animFrameRef.current = requestAnimationFrame(renderCanvas);
+    }
+  }, [renderCanvas]);
+
+  // Node mouse over handler
+  const handleNodeMouseOver = useCallback((nodeData) => {
+    if (!hasAudioInteraction || !onCellHover || silentMode) return;
+
+    const now = Date.now();
+    const lastHover = hoverTimestampsRef.current.get(nodeData.id) || 0;
+    
+    // We still need debouncing for rapid sequences over different nodes
+    // But make it shorter to be more responsive for intentional "strumming"
+    const minTimeBetweenHovers = 30; // ms, reduced from 50ms
+    
+    if (now - lastHover < minTimeBetweenHovers) {
+      console.log('Debouncing rapid hover:', nodeData.id);
+      return;
+    }
+    
+    hoverTimestampsRef.current.set(nodeData.id, now);
+    
+    console.log('Node mouseOver:', { 
+      nodeId: nodeData.id,
+      isPlaying: playingNodesRef.current.has(nodeData.id)
+    });
+
+    // Refresh highlight timestamp
+    highlightTimestampsRef.current.set(nodeData.id, Date.now());
+
+    setNodePlaying(nodeData.id, true);
+    
+    onCellHover({
+      eventId: Date.now(),
+      data: nodeData,
+      experiment,
+      evoRunId,
+      config: {
+        duration: nodeData.duration,
+        noteDelta: nodeData.noteDelta,
+        velocity: nodeData.velocity,
+        onLoopStateChanged: (isLooping) => {
+          console.log('Loop state changed:', { nodeId: nodeData.id, isLooping });
+          setNodePlaying(nodeData.id, isLooping, isLooping);
+        },
+        onEnded: () => {
+          const isLooping = loopingNodesRef.current.has(nodeData.id);
+          
+          console.log('Sound ended:', {
+            nodeId: nodeData.id,
+            isLooping
+          });
+
+          // Only remove highlight if not looping
+          if (!isLooping) {
+            setNodePlaying(nodeData.id, false);
+          }
+        }
+      }
+    });
+  }, [experiment, evoRunId, hasAudioInteraction, onCellHover, setNodePlaying, silentMode]);
+
+  // Replace the flattenTreeToNodes function
+  const flattenTreeToNodes = useCallback((hierarchyRoot) => {
+    rawLayoutDataRef.current = hierarchyRoot;
+    
+    return hierarchyRoot.descendants().map(d => {
+      // Fix coordinate calculation for perfect circle
+      const angle = d.x;
+      const radius = d.y;
+      
+      // Convert polar to Cartesian coordinates
+      const coords = {
+        x: radius * Math.cos(angle),  // Remove the angle offset
+        y: radius * Math.sin(angle)
+      };
+      
+      // Calculate parent coordinates the same way
+      const parentCoords = d.parent ? {
+        x: d.parent.y * Math.cos(d.parent.x),
+        y: d.parent.y * Math.sin(d.parent.x)
+      } : null;
+      
+      return {
+        id: d.data.id,
+        x: coords.x,
+        y: coords.y,
+        s: d.data.s,
+        depth: d.depth,
+        gN: d.data.gN,  // Extract the gN attribute for generation
+        generation: d.data.generation,
+        class: d.data.class,  // Extract class info
+        name: d.data.name,    // Extract name as fallback
+        duration: d.data.duration,
+        noteDelta: d.data.noteDelta,
+        velocity: d.data.velocity,
+        year: d.data.year,
+        parentId: d.parent ? d.parent.data.id : null,
+        parentX: parentCoords?.x,
+        parentY: parentCoords?.y
+      };
+    });
+  }, []);
+
+  // Find node under mouse position
+  const findNode = useCallback((mouseX, mouseY, radius = 20) => {
+    if (!quadtreeRef.current) return null;
+    
+    const transform = currentZoomRef.current || d3.zoomIdentity;
+    const transformedX = (mouseX - transform.x) / transform.k;
+    const transformedY = (mouseY - transform.y) / transform.k;
+    
+    let closestPoint = null;
+    let closestDist = Infinity;
+    
+    quadtreeRef.current.visit((node, x1, y1, x2, y2) => {
+      if (!node.length) {
+        const d = node.data;
+        const dx = scalesRef.current.x(d.x) - transformedX;
+        const dy = scalesRef.current.y(d.y) - transformedY;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        
+        if (dist < radius / transform.k && dist < closestDist) {
+          closestDist = dist;
+          closestPoint = d;
+        }
+      }
+      
+      return x1 > transformedX + radius/transform.k || 
+             y1 > transformedY + radius/transform.k || 
+             x2 < transformedX - radius/transform.k || 
+             y2 < transformedY - radius/transform.k;
+    });
+    
+    return closestPoint;
+  }, []);
+
+  // Enhanced debug logging function
+  const debugLog = useCallback((message, data) => {
+    console.log(`[PhyloViewer] ${message}:`, data);
+  }, []);
+
+  // Update setupInteractions to allow virtually unlimited zoom
+  const setupInteractions = useCallback((canvasElement) => {
+    // Create zoom behavior that handles both wheel zoom and drag
+    // Change scaleExtent from [0.1, 10] to [0.01, 100] for much deeper zoom capability
+    const zoom = d3.zoom()
+      .scaleExtent([0.01, 200])  // Allow zooming from 1% to 10000% of original size
+      .on("zoom", (event) => {
+        // Always update both the ref and persistent state on ANY zoom event
+        // This handles both wheel zooms and drags
+        currentZoomRef.current = event.transform;
+        persistentZoomState.transform = event.transform;
+        renderCanvas();
+      });
+
+    const selection = d3.select(canvasElement)
+      .call(zoom)
+      .on("mousemove", event => {
+        const [mouseX, mouseY] = d3.pointer(event);
+        const node = findNode(mouseX, mouseY);
+        
+        // Handle node hover transitions to avoid jitter
+        // Only trigger events when entering a new node or leaving a node completely
+        if (node) {
+          console.log('Hovering over node:', node);
+          // Enhanced tooltip content with gN for generation and class/name information
+          setTooltip({
+            show: true,
+            content: `
+              <div class="font-medium">${node.id || 'Node'}</div>
+              ${node.s !== undefined ? `<div>Score: ${(node.s * 100).toFixed(1)}%</div>` : ''}
+              ${node.gN !== undefined ? 
+                `<div>Generation: ${node.gN}</div>` : 
+                node.generation !== undefined ? 
+                  `<div>Generation: ${node.generation}</div>` : 
+                  node.depth !== undefined ? `<div>Generation: ${node.depth}</div>` : ''}
+              ${node.class ? 
+                `<div>Class: ${node.class}</div>` : 
+                node.name ? `<div>Name: ${node.name}</div>` : ''}
+              ${node.duration !== undefined ? `<div>Duration: ${node.duration.toFixed(2)}</div>` : ''}
+            `,
+            x: mouseX,
+            y: mouseY
+          });
+          
+          // Only trigger audio/highlight if this is a different node than last time
+          if (!silentMode && currentHoveredNodeRef.current !== node.id) {
+            currentHoveredNodeRef.current = node.id;
+            handleNodeMouseOver(node);
+          }
+        } else {
+          setTooltip({ show: false, content: '', x: 0, y: 0 });
+          
+          // Clear current hovered node when not hovering any node
+          // This ensures we can hover the same node again after leaving it
+          currentHoveredNodeRef.current = null;
+        }
+      });
+
+    // Use persistent transform if available, otherwise create initial transform
+    let initialTransform;
+    
+    if (persistentZoomState.transform) {
+      initialTransform = persistentZoomState.transform;
+      debugLog("Using persistent zoom state", initialTransform);
+    } else {
+      // Calculate offsets based on container dimensions
+      const xOffset = canvasElement.width * POSITION_CONFIG.INITIAL_X_OFFSET_PROP;
+      const yOffset = canvasElement.height * POSITION_CONFIG.INITIAL_Y_OFFSET_PROP;
+      
+      // Position in center with configured proportional offsets and scale
+      initialTransform = d3.zoomIdentity
+        .translate(
+          canvasElement.width / 2 + xOffset, 
+          canvasElement.height / 2 + yOffset
+        )
+        .scale(POSITION_CONFIG.INITIAL_SCALE);
+      
+      debugLog("Created new initial transform", {
+        transform: initialTransform,
+        canvasWidth: canvasElement.width,
+        canvasHeight: canvasElement.height,
+        centerX: canvasElement.width / 2,
+        centerY: canvasElement.height / 2,
+        xOffset,
+        yOffset
+      });
+    }
+
+    selection.call(zoom.transform, initialTransform);
+    currentZoomRef.current = initialTransform;
+    persistentZoomState.transform = initialTransform;
+
+    // Add click handler to the canvas element
+    selection.on("click", event => {
+      const [mouseX, mouseY] = d3.pointer(event);
+      const node = findNode(mouseX, mouseY);
+      
+      if (node) {
+        event.stopPropagation();
+        event.preventDefault();
+        handleNodeClick(node);
+      } else if (!hasAudioInteraction) {
+        onAudioInteraction();
+      }
+    });
+
+    // Add double click handler
+    selection.on("dblclick", event => {
+      const [mouseX, mouseY] = d3.pointer(event);
+      const node = findNode(mouseX, mouseY);
+      
+      if (node && hasAudioInteraction) {
+        event.preventDefault();
+        event.stopPropagation();
+        handleNodeDoubleClick(node);
+      }
+    });
+
+    return initialTransform;
+  }, [findNode, handleNodeMouseOver, handleNodeClick, handleNodeDoubleClick, hasAudioInteraction, onAudioInteraction, renderCanvas, silentMode, debugLog]);
+
+  // Initialize visualization
   useEffect(() => {
     if (!containerRef.current || !treeData) return;
     
-    // Clear existing content and reset initialization flag
+    // Clear existing content
     d3.select(containerRef.current).selectAll("*").remove();
     treeInitializedRef.current = false;
+    hasResetViewRef.current = false;
 
-    // Process the tree based on context switches setting
-    const simplifiedRoot = measureContextSwitches ? 
-      pruneTreeForContextSwitches(treeData) : 
-      treeData;
+    const containerWidth = containerRef.current.clientWidth;
+    const containerHeight = containerRef.current.clientHeight;
+    
+    debugLog("Container dimensions", { containerWidth, containerHeight });
 
-    const margin = { top: 80, right: 20, bottom: 80, left: 20 };
-    const width = containerRef.current.clientWidth - margin.left - margin.right;
-    const height = containerRef.current.clientHeight - margin.top - margin.bottom;
-    const nodeRadius = 6;
-    const separationFactor = 3;
+    // Use either the full container or a square based on config
+    let width, height;
+    if (POSITION_CONFIG.USE_FULL_CONTAINER) {
+      width = containerWidth;
+      height = containerHeight;
+    } else {
+      const size = Math.min(containerWidth, containerHeight);
+      width = size;
+      height = size;
+    }
+    
+    // Apply margin factor
+    const margin = Math.min(width, height) * POSITION_CONFIG.MARGIN_FACTOR; 
+    const radius = (Math.min(width, height) / 2) - margin;
+    
+    debugLog("Calculated dimensions", { 
+      width, height, margin, radius,
+      useFullContainer: POSITION_CONFIG.USE_FULL_CONTAINER
+    });
 
-    // Create hierarchy and calculate margins
-    const root = d3.hierarchy(simplifiedRoot);
-    const maxMeasuredDepth = d3.max(root.descendants(), d => d.depth);
-    const marginRadius = Math.max(100, maxMeasuredDepth * 50);
-    const radius = Math.min(width, height) / 2 - marginRadius;
+    // Create hierarchy with adjusted center
+    const root = d3.hierarchy(
+      measureContextSwitches ? pruneTreeForContextSwitches(treeData) : treeData
+    );
 
-    // Create SVG
-    const svg = d3.select(containerRef.current)
-      .append("svg")
-      .attr("width", width + margin.left + margin.right)
-      .attr("height", height + margin.top + margin.bottom)
-      .style("font", "10px sans-serif");
-
-    const g = svg.append("g")
-      .attr("transform", `translate(${width/2 + margin.left},${height/2 + margin.top})`);
-
-    // Create tree layout
+    // Configure tree layout
     const tree = d3.tree()
-      .size([2 * Math.PI, radius])
-      .separation((a, b) => (a.parent == b.parent ? 1 : 2) / a.depth * separationFactor);
+      .size([2 * Math.PI, radius])  // Use full circle (2π)
+      .separation(() => 1);         // Constant separation for perfect circles
 
-    // Process the hierarchy
+    // Process hierarchy
     tree(root);
 
-    // Adjust nodes function
-    function adjustNodes(node, depth = 0) {
-      if (node.children) {
-        const siblings = node.children;
-        const spacing = 2 * Math.PI / Math.pow(siblings.length, 1.1);
-        siblings.forEach((child, i) => {
-          child.x = node.x + (i - (siblings.length - 1) / 2) * spacing / (depth + 1);
-          adjustNodes(child, depth + 1);
-        });
+    // Get flattened data with center adjustments
+    const flattenedData = root.descendants().map(d => {
+      const angle = d.x;
+      const r = d.y;
+      
+      // Convert polar to Cartesian coordinates with center adjustment
+      const coords = {
+        x: (r * Math.cos(angle)) + POSITION_CONFIG.CENTER_ADJUST_X,
+        y: (r * Math.sin(angle)) + POSITION_CONFIG.CENTER_ADJUST_Y
+      };
+      
+      // Calculate parent coordinates with the same adjustments
+      const parentCoords = d.parent ? {
+        x: (d.parent.y * Math.cos(d.parent.x)) + POSITION_CONFIG.CENTER_ADJUST_X,
+        y: (d.parent.y * Math.sin(d.parent.x)) + POSITION_CONFIG.CENTER_ADJUST_Y
+      } : null;
+      
+      // Log to inspect if generation data exists in the original dataset
+      if (d.depth < 2) {
+        // console.log("Node data sample:", {
+        //   id: d.data.id,
+        //   s: d.data.s,
+        //   depth: d.depth,
+        //   gN: d.data.gN,
+        //   generation: d.data.generation,
+        //   class: d.data.class,
+        //   name: d.data.name,
+        //   nodeData: d.data
+        // });
       }
-    }
+      
+      return {
+        id: d.data.id,
+        x: coords.x,
+        y: coords.y,
+        s: d.data.s,
+        depth: d.depth,
+        gN: d.data.gN,  // Extract the gN attribute for generation
+        generation: d.data.generation,
+        class: d.data.class,  // Extract class info
+        name: d.data.name,    // Extract name as fallback
+        duration: d.data.duration,
+        noteDelta: d.data.noteDelta,
+        velocity: d.data.velocity,
+        year: d.data.year,
+        parentId: d.parent ? d.parent.data.id : null,
+        parentX: parentCoords?.x,
+        parentY: parentCoords?.y
+      };
+    });
 
-    adjustNodes(root);
+    flattenedDataRef.current = flattenedData;
 
-    // Create links
-    const links = g.selectAll(".link")
-      .data(root.links())
-      .join("path")
-      .attr("class", "link")
-      .attr("fill", "none")
-      .attr("stroke", "#555")
-      .attr("stroke-opacity", 0.4)
-      .attr("stroke-width", 3)
-      .attr("d", d3.linkRadial()
-        .angle(d => d.x)
-        .radius(d => d.y));
-
-    // Create nodes
-    const node = g.selectAll(".node")
-      .data(root.descendants())
-      .join("g")
-      .attr("class", "node")
-      .attr("transform", d => `rotate(${d.x * 180 / Math.PI - 90}) translate(${d.y},0)`);
-
-    const circles = node.append("circle")
-      .attr("fill", d => d.data.s ? d3.interpolateViridis(d.data.s) : "#999")
-      .attr("r", nodeRadius)
-      .attr("class", "node-circle")
-      .on("mouseover", handleNodeMouseOver)  // Use the memoized callback
-      .on("mouseout", function(event, d) {
-        setTooltip({ show: false, content: '', x: 0, y: 0 });
-        // Remove color update on mouseout since it's handled by redrawNodes
-      })
-      .on("dblclick", (event, d) => {
-        event.preventDefault();
-        event.stopPropagation();
-        if (hasAudioInteraction) {  // Change this line
-          downloadNodeSound(d);
-        }
+    // Set up scales with equal ranges for x and y to maintain circularity
+    const extent = radius + margin;
+    const scale = d3.scaleLinear()
+      .domain([-extent, extent]);
+    
+    // If maintaining circular proportions, use the same scale range for both axes
+    let xScale, yScale;
+    
+    if (POSITION_CONFIG.MAINTAIN_CIRCULAR) {
+      // Calculate square dimensions that fit within the container
+      const squareSize = Math.min(width, height);
+      const squareMargin = margin;
+      
+      // Create identical ranges for both axes to maintain perfect circle
+      xScale = scale.copy().range([squareMargin, squareSize - squareMargin]);
+      yScale = scale.copy().range([squareSize - squareMargin, squareMargin]); // Invert Y axis
+      
+      // Center the square within the container
+      const xOffset = (width - squareSize) / 2;
+      const yOffset = (height - squareSize) / 2;
+      
+      // Apply offsets to both scales
+      xScale.range([squareMargin + xOffset, squareSize - squareMargin + xOffset]);
+      yScale.range([squareSize - squareMargin + yOffset, squareMargin + yOffset]);
+      
+      debugLog("Using circular scale configuration", { 
+        squareSize,
+        xRange: xScale.range(),
+        yRange: yScale.range(),
+        xOffset,
+        yOffset
       });
-
-    treeInitializedRef.current = true;
-
-    // Add zoom behavior that maintains mouse position as zoom center
-    // Optimize zoom handling
-    const zoom = d3.zoom()
-      .scaleExtent([0.1, 10])
-      .on("zoom", (event) => {
-        requestAnimationFrame(() => {
-          const transform = event.transform;
-          currentZoomTransformRef.current = transform;
-          
-          if (gRef.current) {
-            gRef.current.style.transform = 
-              `translate(${transform.x}px,${transform.y}px) scale(${transform.k})`;
-            
-            // Batch DOM updates
-            const nodes = gRef.current.querySelectorAll('.node-circle');
-            const links = gRef.current.querySelectorAll('.link');
-            
-            nodes.forEach(node => {
-              node.setAttribute('r', nodeRadius / transform.k);
-            });
-            
-            links.forEach(link => {
-              link.style.strokeWidth = `${3 / transform.k}px`;
-            });
-          }
-
-          // // Update audio volume
-          // if (zoomGainNodeRef.current) {
-          //   const newVolume = Math.min(1, transform.k);
-          //   zoomGainNodeRef.current.gain.setValueAtTime(
-          //     newVolume, 
-          //     audioContextRef.current.currentTime
-          //   );
-          // }
-        });
-      });
-
-    // Store refs for direct access
-    svgRef.current = svg.node();
-    gRef.current = g.node();
-    nodesRef.current = node.node();
-    linksRef.current = links.node();
-
-    // Apply zoom behavior
-    svg.call(zoom);
-
-    // Apply stored zoom transform or initial zoom
-    if (currentZoomTransformRef.current) {
-      svg.call(zoom.transform, currentZoomTransformRef.current);
     } else {
-      const dx = width / 2;
-      const dy = height / 2;
-      svg.call(
-        zoom.transform,
-        d3.zoomIdentity
-          .translate(dx, dy)
-          .scale(0.8)
-      );
+      // Use the full container dimensions with potential distortion
+      xScale = scale.copy().range([margin, width - margin]);
+      yScale = scale.copy().range([height - margin, margin]); // Invert Y axis
+      
+      debugLog("Using container-fitted scale configuration", { 
+        xRange: xScale.range(),
+        yRange: yScale.range()
+      });
     }
 
-    // Add window resize handler
+    scalesRef.current = { x: xScale, y: yScale };
+
+    // Setup canvas with dimensions that match container
+    const canvasElement = document.createElement('canvas');
+    canvasElement.width = containerWidth;
+    canvasElement.height = containerHeight;
+    canvasElement.style.position = 'absolute';
+    canvasElement.style.left = '0';
+    canvasElement.style.top = '0';
+    containerRef.current.appendChild(canvasElement);
+    canvasRef.current = canvasElement;
+
+    debugLog("Canvas created", { 
+      width: canvasElement.width, 
+      height: canvasElement.height,
+      left: canvasElement.style.left,
+      top: canvasElement.style.top
+    });
+
+    // Build quadtree
+    quadtreeRef.current = d3.quadtree()
+      .x(d => scalesRef.current.x(d.x))
+      .y(d => scalesRef.current.y(d.y))
+      .addAll(flattenedData);
+
+    // Check for persistent zoom state first
+    if (persistentZoomState.transform) {
+      currentZoomRef.current = persistentZoomState.transform;
+      debugLog("Using persistent zoom transform", currentZoomRef.current);
+    } else {
+      // Calculate offsets based on container dimensions
+      const xOffset = containerWidth * POSITION_CONFIG.INITIAL_X_OFFSET_PROP;
+      const yOffset = containerHeight * POSITION_CONFIG.INITIAL_Y_OFFSET_PROP;
+      
+      // Initialize with centered and scaled view
+      const initialTransform = d3.zoomIdentity
+        .translate(
+          containerWidth / 2 + xOffset,
+          containerHeight / 2 + yOffset
+        )
+        .scale(POSITION_CONFIG.INITIAL_SCALE);
+      
+      currentZoomRef.current = initialTransform;
+      persistentZoomState.transform = initialTransform;
+      
+      debugLog("Created initial transform", { 
+        translateX: initialTransform.x,
+        translateY: initialTransform.y,
+        scale: initialTransform.k,
+        containerCenter: { 
+          x: containerWidth / 2, 
+          y: containerHeight / 2 
+        },
+        xOffset,
+        yOffset
+      });
+    }
+
+    setupInteractions(canvasElement);
+    renderCanvas();
+
+    // Add window resize handler that preserves relative positioning
     const handleResize = () => {
-      const newWidth = containerRef.current.clientWidth - margin.left - margin.right;
-      const newHeight = containerRef.current.clientHeight - margin.top - margin.bottom;
+      if (!containerRef.current || !canvasRef.current) return;
       
-      svg
-        .attr("width", newWidth + margin.left + margin.right)
-        .attr("height", newHeight + margin.top + margin.bottom);
+      const oldWidth = canvasRef.current.width;
+      const oldHeight = canvasRef.current.height;
       
-      if (currentZoomTransformRef.current) {
-        g.attr("transform", currentZoomTransformRef.current);
+      const newWidth = containerRef.current.clientWidth;
+      const newHeight = containerRef.current.clientHeight;
+
+      // Update canvas size
+      canvasRef.current.width = newWidth;
+      canvasRef.current.height = newHeight;
+      
+      // Update scales while maintaining circularity if configured
+      if (POSITION_CONFIG.MAINTAIN_CIRCULAR) {
+        const extent = scalesRef.current.x.domain()[1];
+        
+        // Calculate square dimensions that fit within container
+        const squareSize = Math.min(newWidth, newHeight);
+        const margin = squareSize * POSITION_CONFIG.MARGIN_FACTOR;
+        
+        // Center the square within the container
+        const xOffset = (newWidth - squareSize) / 2;
+        const yOffset = (newHeight - squareSize) / 2;
+        
+        // Update scale ranges with new dimensions while maintaining circularity
+        scalesRef.current.x.range([margin + xOffset, squareSize - margin + xOffset]);
+        scalesRef.current.y.range([squareSize - margin + yOffset, margin + yOffset]);
+        
+        debugLog("Resized with circular scale configuration", {
+          newWidth, newHeight, squareSize,
+          xRange: scalesRef.current.x.range(),
+          yRange: scalesRef.current.y.range(),
+          xOffset, yOffset
+        });
       } else {
-        g.attr("transform", `translate(${newWidth/2 + margin.left},${newHeight/2 + margin.top})`);
+        // Update scale ranges to use full container (may distort circle)
+        const margin = Math.min(newWidth, newHeight) * POSITION_CONFIG.MARGIN_FACTOR;
+        scalesRef.current.x.range([margin, newWidth - margin]);
+        scalesRef.current.y.range([newHeight - margin, margin]);
       }
+      
+      // Update quadtree with new scale
+      if (flattenedDataRef.current.length > 0) {
+        quadtreeRef.current = d3.quadtree()
+          .x(d => scalesRef.current.x(d.x))
+          .y(d => scalesRef.current.y(d.y))
+          .addAll(flattenedDataRef.current);
+      }
+
+      // Update transform to maintain relative position
+      if (currentZoomRef.current) {
+        const oldTransform = currentZoomRef.current;
+        const widthRatio = newWidth / oldWidth;
+        const heightRatio = newHeight / oldHeight;
+        
+        // Calculate new transform that preserves relative position
+        const newTransform = d3.zoomIdentity
+          .translate(
+            oldTransform.x * widthRatio,
+            oldTransform.y * heightRatio
+          )
+          .scale(oldTransform.k);
+        
+        currentZoomRef.current = newTransform;
+        persistentZoomState.transform = newTransform;
+      }
+      
+      // Render with new dimensions
+      renderCanvas();
     };
 
     window.addEventListener('resize', handleResize);
@@ -501,46 +871,57 @@ const PhylogeneticViewer = ({
     // Cleanup
     return () => {
       window.removeEventListener('resize', handleResize);
-      // Remove the old audio cleanup since we're using AudioManager now
-      audioManagerRef.current?.cleanup();
+      if (animFrameRef.current) {
+        cancelAnimationFrame(animFrameRef.current);
+      }
+      // Don't clear persistentZoomState on unmount
     };
-  }, [treeData, experiment, evoRunId, measureContextSwitches, hasAudioInteraction, handleNodeMouseOver]); // Remove silentMode
+  }, [treeData, measureContextSwitches, setupInteractions, renderCanvas, debugLog]);
 
-  // Add periodic redraw to catch any missed state changes
+  // Add a cleanup function that runs only when the component is fully unmounted
+  // (e.g., when navigating away, not on re-renders)
   useEffect(() => {
-    const interval = setInterval(() => {
-      if (audioManagerRef.current) {
-        redrawNodes();
-      }
-    }, 100); // Check every 100ms
+    return () => {
+      // Only clear persistent zoom state when the experiment or evo run changes
+    };
+  }, [experiment, evoRunId]);
 
-    return () => clearInterval(interval);
-  }, [redrawNodes]);
-
-  // Update click handler
-  const handleClick = async (e) => {
-    e.stopPropagation();
-    console.log('Click handler, hasAudioInteraction:', hasAudioInteraction, 'renderer ready:', rendererReady);
-    
-    if (!hasAudioInteraction && rendererReady) {
-      try {
-        await contextRef.current.resume();
-        onAudioInteraction();
-        console.log('Audio interaction enabled');
-      } catch (error) {
-        console.error('Error initializing audio:', error);
-      }
-    } else {
-      console.log('Audio not ready:', { 
-        hasAudioInteraction, 
-        rendererReady, 
-        contextState: contextRef.current?.state,
-        hasRenderer: !!rendererRef.current 
-      });
-    }
+  // Handle search input change
+  const handleSearchInput = (e) => {
+    searchTermRef.current = e.target.value.trim().toLowerCase();
+    // Could implement search highlighting here
   };
 
-  // Update the theme handling
+  // Add cleanup interval for stale highlights
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const now = Date.now();
+      let changed = false;
+      
+      highlightTimestampsRef.current.forEach((timestamp, nodeId) => {
+        if (now - timestamp > HIGHLIGHT_EXPIRY && !loopingNodesRef.current.has(nodeId)) {
+          playingNodesRef.current.delete(nodeId);
+          highlightTimestampsRef.current.delete(nodeId);
+          changed = true;
+        }
+      });
+      
+      if (changed && canvasRef.current) {
+        renderCanvas();
+      }
+    }, 1000);
+    
+    cleanupIntervalRef.current = interval;
+    
+    return () => {
+      clearInterval(interval);
+      highlightTimestampsRef.current.clear();
+      playingNodesRef.current.clear();
+      loopingNodesRef.current.clear();
+    };
+  }, [renderCanvas]);
+
+  // Update theme
   useEffect(() => {
     if (theme === 'light') {
       document.documentElement.classList.add('light-theme');
@@ -551,24 +932,43 @@ const PhylogeneticViewer = ({
     }
   }, [theme]);
 
-  const handleExportSVG = useCallback(() => {
-    if (!svgRef.current) return;
-    
-    // Clone the SVG to avoid modifying the displayed one
-    const clonedSvg = svgRef.current.cloneNode(true);
-    
-    // Apply current transform to the main group
-    if (currentZoomTransformRef.current) {
-      const g = clonedSvg.querySelector('g');
-      const transform = currentZoomTransformRef.current;
-      g.setAttribute('transform', `translate(${transform.x},${transform.y}) scale(${transform.k})`);
-    }
+  // Key press handler for silent mode toggle
+  useEffect(() => {
+    const handleKeyPress = (e) => {
+      if (e.key === 'Alt' && e.type === 'keydown') {
+        e.preventDefault();
+        setSilentMode(prev => !prev);
+      }
+    };
+  
+    window.addEventListener('keydown', handleKeyPress);
+    return () => window.removeEventListener('keydown', handleKeyPress);
+  }, []);
 
-    // Convert to string
-    const svgString = new XMLSerializer().serializeToString(clonedSvg);
+  // Export SVG function
+  const handleExportSVG = useCallback(() => {
+    if (!canvasRef.current) return;
+    
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    const width = canvasRef.current.width;
+    const height = canvasRef.current.height;
+    
+    svg.setAttribute('width', width);
+    svg.setAttribute('height', height);
+    svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+    
+    const img = document.createElementNS('http://www.w3.org/2000/svg', 'image');
+    img.setAttribute('x', 0);
+    img.setAttribute('y', 0);
+    img.setAttribute('width', width);
+    img.setAttribute('height', height);
+    img.setAttribute('href', canvasRef.current.toDataURL('image/png'));
+    
+    svg.appendChild(img);
+    
+    const svgString = new XMLSerializer().serializeToString(svg);
     const blob = new Blob([svgString], { type: 'image/svg+xml' });
     
-    // Create download link
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
@@ -579,41 +979,273 @@ const PhylogeneticViewer = ({
     URL.revokeObjectURL(url);
   }, []);
 
-  // Add key handler for Alt key
+  // Main click handler
+  const handleClick = async (e) => {
+    e.stopPropagation();
+    if (!hasAudioInteraction) {
+      onAudioInteraction();
+    }
+    // Don't reset zoom on clicks
+  };
+
+  // Add a wheel event optimization to prevent "zoom exhaustion"
   useEffect(() => {
-    const handleKeyPress = (e) => {
-      if (e.key === 'Alt') {
-        setSilentMode(e.type === 'keydown');
+    if (!containerRef.current) return;
+    
+    // Add a custom wheel event listener to improve zoom behavior
+    const handleWheel = (event) => {
+      // Only modify behavior when deeply zoomed
+      if (currentZoomRef.current && currentZoomRef.current.k > 20) {
+        // Adjust zoom speed at extreme zoom levels
+        event.preventDefault();
+        
+        // Get the current zoom transform
+        const transform = currentZoomRef.current;
+        
+        // Calculate zoom factor - make it more responsive at extreme zoom levels
+        const scaleFactor = 1 + Math.abs(event.deltaY) * 0.001;
+        
+        // Zoom in or out based on wheel direction
+        const newK = event.deltaY < 0 ? 
+          transform.k * scaleFactor : 
+          transform.k / scaleFactor;
+        
+        // Apply minimum and maximum zoom constraints
+        const constrainedK = Math.max(0.01, Math.min(100, newK));
+        
+        // Create new transform with adjusted scale
+        const newTransform = d3.zoomIdentity
+          .translate(transform.x, transform.y)
+          .scale(constrainedK);
+        
+        // Update current transform
+        currentZoomRef.current = newTransform;
+        persistentZoomState.transform = newTransform;
+        
+        // Render with new transform
+        renderCanvas();
       }
     };
-  
-    window.addEventListener('keydown', handleKeyPress);
-    window.addEventListener('keyup', handleKeyPress);
-  
+    
+    // Only add this specialized handler if needed
+    if (containerRef.current) {
+      // Use passive: false to enable preventDefault()
+      containerRef.current.addEventListener('wheel', handleWheel, { passive: false });
+    }
+    
     return () => {
-      window.removeEventListener('keydown', handleKeyPress);
-      window.removeEventListener('keyup', handleKeyPress);
+      if (containerRef.current) {
+        containerRef.current.removeEventListener('wheel', handleWheel);
+      }
+    };
+  }, [renderCanvas]);
+
+  // Add state for all configurable zoom settings
+  const [zoomSettings, setZoomSettings] = useState({
+    // Node settings
+    BASE_NODE_RADIUS: POSITION_CONFIG.BASE_NODE_RADIUS,
+    MIN_NODE_RADIUS: POSITION_CONFIG.MIN_NODE_RADIUS,
+    MAX_NODE_RADIUS: POSITION_CONFIG.MAX_NODE_RADIUS,
+    NODE_SCALING_FACTOR: POSITION_CONFIG.NODE_SCALING_FACTOR,
+    
+    // Simplified line settings
+    LINE_WIDTH: POSITION_CONFIG.LINE_WIDTH,
+    LINE_SCALING_FACTOR: POSITION_CONFIG.LINE_SCALING_FACTOR,
+    
+    // High zoom settings
+    HIGH_ZOOM_LEVEL: POSITION_CONFIG.HIGH_ZOOM_LEVEL,
+    NODE_BORDER_WIDTH: POSITION_CONFIG.NODE_BORDER_WIDTH,
+    NODE_SEPARATION_BOOST: POSITION_CONFIG.NODE_SEPARATION_BOOST
+  });
+
+  // Update the effect that applies all the zoom settings
+  useEffect(() => {
+    // Apply all settings to POSITION_CONFIG
+    Object.keys(zoomSettings).forEach(key => {
+      POSITION_CONFIG[key] = zoomSettings[key];
+    });
+    
+    if (canvasRef.current) {
+      renderCanvas();
+    }
+  }, [zoomSettings, renderCanvas]);
+
+  // Add a ref to track the currently hovered node
+  const currentHoveredNodeRef = useRef(null);
+
+  // Store experiment and evoRunId in global window for access by other components
+  useEffect(() => {
+    if (experiment) {
+      window.phyloExperiment = experiment;
+    }
+    
+    if (evoRunId) {
+      window.phyloEvoRunId = evoRunId;
+    }
+    
+    // Store combined information in tree data itself for easier access
+    if (treeData && (experiment || evoRunId)) {
+      // Add annotations to the tree data to help with identification
+      const annotatedTreeData = {
+        ...treeData,
+        experiment: experiment,
+        evoRunId: evoRunId,
+        __timestamp: Date.now(), // Add timestamp to detect changes
+        __source: 'PhylogeneticViewer', // Indicate source of data
+      };
+      
+      window.phyloTreeData = annotatedTreeData;
+      console.log('Stored annotated tree data in window.phyloTreeData', {
+        experiment,
+        evoRunId,
+        treeDataAvailable: !!treeData,
+        timestamp: annotatedTreeData.__timestamp
+      });
+      
+      // Automatically notify any active sequencing units about the tree data
+      if (window.getUnitInstance) {
+        try {
+          const units = document.querySelectorAll('[data-unit-id]');
+          units.forEach(unitEl => {
+            const unitId = unitEl.getAttribute('data-unit-id');
+            const unitInstance = window.getUnitInstance(unitId);
+            
+            if (unitInstance && unitInstance.type === 'SEQUENCING') {
+              console.log(`Auto-updating tree information for unit ${unitId}`);
+              unitInstance.updateTreeInformation(annotatedTreeData);
+            }
+          });
+        } catch (err) {
+          console.warn('Error while auto-updating sequencing units:', err);
+        }
+      }
+    }
+    
+    return () => {
+      // We keep the global data for cross-component access
+      // But we could clean it up here if needed
+    };
+  }, [experiment, evoRunId, treeData]);
+
+  // Add a cleanup effect for the retry timeout
+  useEffect(() => {
+    return () => {
+      if (retryTimeoutRef.current) {
+        clearTimeout(retryTimeoutRef.current);
+      }
     };
   }, []);
+
+  const playAudioWithFade = async (d) => {
+    if (!hasAudioInteraction) return;
+    if (!audioContextRef.current || audioContextRef.current.state === 'suspended') {
+      console.log('Audio context not ready');
+      return;
+    }
+    if (currentPlayingNodeRef.current === d) return;
+
+    try {
+      // Use REST service instead of static file serving
+      const restServiceHost = getRestServiceHost();
+      // evoRunId should now contain the full folder name
+      const folderName = evoRunId;
+      const ulid = d.data.id;
+      const duration = d.data.duration;
+      const pitch = d.data.noteDelta;
+      const velocity = d.data.velocity;
+      
+      const audioUrl = `${restServiceHost}${REST_ENDPOINTS.RENDER_AUDIO(folderName, ulid, duration, pitch, velocity)}`;
+      
+      console.log('Attempting to play:', audioUrl);
+
+      // Check if URL is available before attempting to fetch
+      const isAvailable = await checkUrlAvailability(audioUrl);
+      
+      if (!isAvailable) {
+        setLoadingError('Audio server not responding. Attempting to reconnect...');
+        setIsRetrying(true);
+        
+        const success = await retryWithBackoff(audioUrl);
+        if (!success) {
+          return;
+        }
+      }
+
+      const response = await fetch(audioUrl);
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
+      const arrayBuffer = await response.arrayBuffer();
+      const audioBuffer = await audioContextRef.current.decodeAudioData(arrayBuffer);
+
+      if (currentSourceRef.current) {
+        await stopAudioWithFade();
+      }
+
+      // Create and configure audio nodes
+      currentSourceRef.current = audioContextRef.current.createBufferSource();
+      currentSourceRef.current.buffer = audioBuffer;
+      currentSourceRef.current.loop = false;
+
+      currentGainNodeRef.current = audioContextRef.current.createGain();
+      // ... rest of the existing audio setup code ...
+    } catch (error) {
+      console.error('Error playing audio:', error);
+      setLoadingError(error.message || 'Error playing audio file');
+      if (error.message.includes('HTTP error')) {
+        setLoadingError('Audio file not found or server error. Please check the audio server URL in settings.');
+      }
+    }
+  };
 
   return (
     <div 
       className={`flex flex-col h-screen ${theme === 'light' ? 'bg-gray-100' : 'bg-gray-950'}`}
       onClick={handleClick}
     >
-      {/* Add download button next to settings */}
-      <div className="absolute bottom-2 right-2 z-50 flex gap-2">
+      {/* Silent Mode Indicator + Discord Button */}
+      <div className="fixed bottom-2 left-2 text-white/70 text-xs flex items-center gap-2 z-50">
+        {/* Discord Button */}
+        <a
+          href="https://discord.gg/8v6MaaAS7F"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="p-1.5 rounded bg-indigo-600 hover:bg-indigo-700 text-white flex items-center mr-2"
+          title="Join us on Discord"
+        >
+          {/* Discord SVG icon (Heroicons/outline style, Tailwind compatible) */}
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5">
+            <path d="M20.317 4.369A19.791 19.791 0 0 0 16.885 3.3a.084.084 0 0 0-.09.042c-.388.676-.822 1.557-1.125 2.25a18.726 18.726 0 0 0-5.36 0c-.303-.693-.737-1.574-1.125-2.25a.084.084 0 0 0-.09-.042c-3.432.6-6.13 2.07-6.13 2.07a.07.07 0 0 0-.032.028C.533 9.043-.32 13.58.099 18.057a.09.09 0 0 0 .032.062c2.577 1.89 5.07 2.41 5.07 2.41a.084.084 0 0 0 .09-.03c.39-.534.74-1.1 1.02-1.7a.084.084 0 0 0-.045-.115c-.552-.21-1.08-.47-1.59-.77a.084.084 0 0 1-.008-.14c.107-.08.214-.16.317-.24a.084.084 0 0 1 .086-.01c3.3 1.51 6.86 1.51 10.14 0a.084.084 0 0 1 .087.01c.104.08.21.16.317.24a.084.084 0 0 1-.008.14c-.51.3-1.038.56-1.59.77a.084.084 0 0 0-.045.115c.28.6.63 1.166 1.02 1.7a.084.084 0 0 0 .09.03s2.493-.52 5.07-2.41a.09.09 0 0 0 .032-.062c.43-4.477-.434-9.014-2.37-13.66a.07.07 0 0 0-.032-.028ZM8.02 15.33c-.987 0-1.797-.9-1.797-2.01 0-1.11.8-2.01 1.797-2.01 1 0 1.8.9 1.8 2.01 0 1.11-.8 2.01-1.8 2.01Zm7.96 0c-.987 0-1.797-.9-1.797-2.01 0-1.11.8-2.01 1.797-2.01 1 0 1.8.9 1.8 2.01 0 1.11-.8 2.01-1.8 2.01Z" />
+          </svg>
+        </a>
         <button
           onClick={handleExportSVG}
-          className="p-2 rounded-full bg-gray-800/80 hover:bg-gray-700/80 text-white"
+          className="p-1.5 rounded bg-gray-800/80 hover:bg-gray-700/80 text-white mr-2"
           title="Export as SVG"
         >
-          <Download size={20} />
+          <Download size={16} />
         </button>
-        {/* ...existing settings button... */}
+        <span>Hover: {silentMode ? 'navigation only' : 'play sound'} • Double-click: download</span>
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            setSilentMode(prev => !prev);
+          }}
+          className={`px-2 py-1 rounded text-xs transition-colors ${
+            silentMode 
+              ? 'bg-blue-600 text-white' 
+              : 'bg-gray-800/80 text-gray-400 hover:text-white'
+          }`}
+        >
+          {silentMode ? 'Silent Mode On' : 'Silent Mode Off'}
+        </button>
+        <span className="text-gray-500">(Alt to toggle)</span>
       </div>
 
-      {/* Enhanced Settings Panel */}
+      {/* Removed the original download button since it's now in the left panel */}
+
+      {/* Settings Panel */}
       {showSettings && (
         <div 
           className={`absolute right-0 top-12 p-6 rounded-l shadow-lg z-50
@@ -623,12 +1255,12 @@ const PhylogeneticViewer = ({
             backdrop-blur w-80`}
         >
           <div className="space-y-6">
-            {/* Search Filter - Now using ref */}
+            {/* Search Filter */}
             <div className="space-y-2">
               <label className="text-sm font-medium">Search Filter</label>
               <input
                 type="text"
-                defaultValue={searchTermRef.current}  // Using defaultValue with ref
+                defaultValue={searchTermRef.current}
                 onChange={handleSearchInput}
                 placeholder="Search by ID..."
                 className="w-full px-3 py-1.5 text-sm bg-gray-800 text-white rounded border border-gray-700 focus:border-blue-500 focus:outline-none"
@@ -654,7 +1286,7 @@ const PhylogeneticViewer = ({
             {/* Theme Toggle */}
             <div className="space-y-2">
               <label className="text-sm font-medium">Appearance</label>
-              <label class="flex items-center gap-2 text-sm cursor-pointer">
+              <label className="flex items-center gap-2 text-sm cursor-pointer">
                 <input
                   type="checkbox"
                   checked={theme === 'light'}
@@ -667,7 +1299,7 @@ const PhylogeneticViewer = ({
               </label>
             </div>
 
-            {/* Add Polyphony Control */}
+            {/* Polyphony Control */}
             <div className="space-y-2">
               <label className="text-sm font-medium">Polyphony (Max Voices)</label>
               <div className="flex items-center gap-2">
@@ -684,7 +1316,7 @@ const PhylogeneticViewer = ({
               </div>
             </div>
 
-            {/* Add Silent Mode Control */}
+            {/* Silent Mode Control */}
             <div className="space-y-2">
               <label className="text-sm font-medium">Navigation Mode</label>
               <label className="flex items-center gap-2 text-sm cursor-pointer">
@@ -699,11 +1331,108 @@ const PhylogeneticViewer = ({
                 Silent mode (or hold Alt key)
               </label>
             </div>
+
+            {/* Context Switches Measurement */}
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Tree Analysis</label>
+              <label className="flex items-center gap-2 text-sm cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={measureContextSwitches}
+                  onChange={(e) => setMeasureContextSwitches(e.target.checked)}
+                  className={`rounded ${theme === 'light' 
+                    ? 'bg-white border-gray-300' 
+                    : 'bg-gray-800 border-gray-700'}`}
+                />
+                Show context switches only
+              </label>
+            </div>
+
+            {/* Lineage Sounds URL Configuration */}
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Lineage Sounds URL</label>
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={customHostUrl}
+                    onChange={(e) => setCustomHostUrl(e.target.value)}
+                    onFocus={() => setIsEditingUrl(true)}
+                    onBlur={() => {
+                      if (!customHostUrl.trim()) {
+                        setIsEditingUrl(false);
+                      }
+                    }}
+                    placeholder={DEFAULT_LINEAGE_SOUNDS_BUCKET_HOST}
+                    className="flex-1 px-3 py-1.5 text-sm bg-gray-800 text-white rounded border border-gray-700 focus:border-blue-500 focus:outline-none"
+                  />
+                  {isEditingUrl ? (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (customHostUrl.trim()) {
+                          localStorage.setItem('CUSTOM_LINEAGE_SOUNDS_URL', customHostUrl.trim());
+                        } else {
+                          localStorage.removeItem('CUSTOM_LINEAGE_SOUNDS_URL');
+                        }
+                        setIsEditingUrl(false);
+                        // Clear any existing error
+                        setLoadingError(null);
+                        window.location.reload();
+                      }}
+                      className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700"
+                    >
+                      Save
+                    </button>
+                  ) : (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setIsEditingUrl(true);
+                      }}
+                      className="px-3 py-1.5 text-sm bg-gray-700 text-white rounded hover:bg-gray-600"
+                    >
+                      Edit
+                    </button>
+                  )}
+                </div>
+                {loadingError && (
+                  <div className="text-sm text-red-500 bg-red-900/20 p-2 rounded">
+                    {loadingError}
+                    {!isRetrying && (
+                      <button
+                        onClick={() => {
+                          setLoadingError(null);
+                          const restServiceHost = getRestServiceHost();
+                          const testUrl = `${restServiceHost}/evoruns/summary`;
+                          setIsRetrying(true);
+                          retryWithBackoff(testUrl);
+                        }}
+                        className="ml-2 underline hover:no-underline"
+                      >
+                        Retry
+                      </button>
+                    )}
+                  </div>
+                )}
+                {isRetrying && (
+                  <div className="text-sm text-yellow-500">
+                    Attempting to reconnect...
+                  </div>
+                )}
+                <p className="text-xs text-gray-400">
+                  Custom URL for lineage sounds bucket. Default: {DEFAULT_LINEAGE_SOUNDS_BUCKET_HOST}
+                </p>
+              </div>
+            </div>
+
+            {/* Add this to the settings panel, before the last closing div */}
+            <ZoomSettingsControls settings={zoomSettings} setSettings={setZoomSettings} />
+
           </div>
         </div>
       )}
 
-      {/* Rest of the component remains the same */}
       <div className="flex-1 relative">
         <div 
           ref={containerRef} 
@@ -711,7 +1440,7 @@ const PhylogeneticViewer = ({
           onClick={handleClick}
         />
 
-        {/* Add tooltip div */}
+        {/* Tooltip */}
         {tooltip.show && (
           <div
             className="fixed z-50 px-2 py-1 bg-gray-900 text-white text-sm rounded pointer-events-none"
@@ -723,22 +1452,217 @@ const PhylogeneticViewer = ({
           />
         )}
 
-        <div className="absolute bottom-2 left-2 text-white/70 text-xs flex items-center gap-2">
-          <span>Hover: {silentMode ? 'navigation only' : 'play sound'} • Double-click: download</span>
-          {silentMode && (
-            <span className="px-1.5 py-0.5 bg-gray-800/80 rounded text-xs">
-              Silent Mode
-            </span>
-          )}
-        </div>
-
+        {/* Audio interaction overlay */}
         {!hasAudioInteraction && (
-        <div className="absolute inset-0 flex items-center justify-center bg-black/50 backdrop-blur-sm z-20">
-          <div className="bg-gray-800/90 px-4 py-3 rounded text-white text-sm">
-            Click anywhere to enable audio playback
+          <>
+            <div className="absolute inset-0 flex items-center justify-center bg-black/50 backdrop-blur-sm z-20" />
+            <div className="absolute inset-0 flex items-center justify-center z-20">
+              <div className="bg-gray-800/90 px-4 py-3 rounded text-white text-sm">
+                Click anywhere to enable audio playback
+              </div>
+            </div>
+          </>
+        )}
+
+        {/* Error message for audio loading */}
+        {loadingError && (
+          <div className="absolute inset-0 flex items-center justify-center z-30">
+            <div className="bg-red-600/90 text-white text-sm rounded px-4 py-2 shadow-md">
+              {loadingError}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// Add UI controls for zoom display settings in the settings panel
+// (After existing settings panel controls)
+const ZoomSettingsControls = ({ settings, setSettings }) => {
+  // Helper function to update a single setting
+  const updateSetting = (key, value) => {
+    setSettings(prev => ({
+      ...prev,
+      [key]: value
+    }));
+  };
+  
+  return (
+    <div className="space-y-4">
+      <div>
+        <label className="text-sm font-medium">Node Appearance</label>
+        <div className="grid grid-cols-1 gap-3 mt-2">
+          <div>
+            <div className="flex justify-between text-xs">
+              <span>Base Node Size: {settings.BASE_NODE_RADIUS.toFixed(1)}</span>
+            </div>
+            <input
+              type="range"
+              className="w-full"
+              min="2"
+              max="15"
+              step="0.5"
+              value={settings.BASE_NODE_RADIUS}
+              onChange={(e) => updateSetting('BASE_NODE_RADIUS', parseFloat(e.target.value))}
+            />
+          </div>
+          
+          <div>
+            <div className="flex justify-between text-xs">
+              <span>Min Node Size: {settings.MIN_NODE_RADIUS.toFixed(1)}</span>
+            </div>
+            <input
+              type="range"
+              className="w-full"
+              min="0.5"
+              max="5"
+              step="0.1"
+              value={settings.MIN_NODE_RADIUS}
+              onChange={(e) => updateSetting('MIN_NODE_RADIUS', parseFloat(e.target.value))}
+            />
+          </div>
+          
+          <div>
+            <div className="flex justify-between text-xs">
+              <span>Max Node Size: {settings.MAX_NODE_RADIUS.toFixed(1)}</span>
+            </div>
+            <input
+              type="range"
+              className="w-full"
+              min="10"
+              max="40"
+              step="1"
+              value={settings.MAX_NODE_RADIUS}
+              onChange={(e) => updateSetting('MAX_NODE_RADIUS', parseFloat(e.target.value))}
+            />
+          </div>
+          
+          <div>
+            <div className="flex justify-between text-xs">
+              <span>Node Scaling Factor: {settings.NODE_SCALING_FACTOR.toFixed(2)}</span>
+              <span className="italic text-gray-400">(Lower = More Separation)</span>
+            </div>
+            <input
+              type="range"
+              className="w-full"
+              min="0.05"
+              max="0.5"
+              step="0.01"
+              value={settings.NODE_SCALING_FACTOR}
+              onChange={(e) => updateSetting('NODE_SCALING_FACTOR', parseFloat(e.target.value))}
+            />
           </div>
         </div>
-      )}
+      </div>
+      
+      <div>
+        <label className="text-sm font-medium">Line Appearance</label>
+        <div className="grid grid-cols-1 gap-3 mt-2">
+          <div>
+            <div className="flex justify-between text-xs">
+              <span>Line Width: {settings.LINE_WIDTH.toFixed(1)}</span>
+            </div>
+            <input
+              type="range"
+              className="w-full"
+              min="0.5"
+              max="5"
+              step="0.1"
+              value={settings.LINE_WIDTH}
+              onChange={(e) => updateSetting('LINE_WIDTH', parseFloat(e.target.value))}
+            />
+          </div>
+          
+          <div>
+            <div className="flex justify-between text-xs">
+              <span>Line Scaling: {settings.LINE_SCALING_FACTOR.toFixed(2)}</span>
+              <span className="italic text-gray-400">(Lower = More Consistent)</span>
+            </div>
+            <input
+              type="range"
+              className="w-full"
+              min="0.1"
+              max="1"
+              step="0.05"
+              value={settings.LINE_SCALING_FACTOR}
+              onChange={(e) => updateSetting('LINE_SCALING_FACTOR', parseFloat(e.target.value))}
+            />
+          </div>
+        </div>
+      </div>
+      
+      <div>
+        <label className="text-sm font-medium">High Zoom Behavior</label>
+        <div className="grid grid-cols-1 gap-3 mt-2">
+          <div>
+            <div className="flex justify-between text-xs">
+              <span>High Zoom Threshold: {settings.HIGH_ZOOM_LEVEL.toFixed(1)}x</span>
+            </div>
+            <input
+              type="range"
+              className="w-full"
+              min="5"
+              max="30"
+              step="1"
+              value={settings.HIGH_ZOOM_LEVEL}
+              onChange={(e) => updateSetting('HIGH_ZOOM_LEVEL', parseFloat(e.target.value))}
+            />
+          </div>
+          
+          <div>
+            <div className="flex justify-between text-xs">
+              <span>Node Border Width: {settings.NODE_BORDER_WIDTH.toFixed(2)}</span>
+            </div>
+            <input
+              type="range"
+              className="w-full"
+              min="0.1"
+              max="2"
+              step="0.1"
+              value={settings.NODE_BORDER_WIDTH}
+              onChange={(e) => updateSetting('NODE_BORDER_WIDTH', parseFloat(e.target.value))}
+            />
+          </div>
+          
+          <div>
+            <div className="flex justify-between text-xs">
+              <span>High Zoom Separation: {settings.NODE_SEPARATION_BOOST.toFixed(2)}</span>
+              <span className="italic text-gray-400">(Lower = More Separation)</span>
+            </div>
+            <input
+              type="range"
+              className="w-full"
+              min="0.1"
+              max="1"
+              step="0.05"
+              value={settings.NODE_SEPARATION_BOOST}
+              onChange={(e) => updateSetting('NODE_SEPARATION_BOOST', parseFloat(e.target.value))}
+            />
+          </div>
+        </div>
+      </div>
+      
+      <div className="flex justify-end">
+        <button
+          className="px-3 py-1 bg-blue-600 text-white text-xs rounded hover:bg-blue-700"
+          onClick={() => {
+            // Reset to default values
+            setSettings({
+              BASE_NODE_RADIUS: 6,
+              MIN_NODE_RADIUS: 2,
+              MAX_NODE_RADIUS: 20,
+              NODE_SCALING_FACTOR: 0.1,
+              LINE_WIDTH: 1.5,
+              LINE_SCALING_FACTOR: 0.6,
+              HIGH_ZOOM_LEVEL: 10,
+              NODE_BORDER_WIDTH: 0.5,
+              NODE_SEPARATION_BOOST: 0.2
+            });
+          }}
+        >
+          Reset to Defaults
+        </button>
       </div>
     </div>
   );
